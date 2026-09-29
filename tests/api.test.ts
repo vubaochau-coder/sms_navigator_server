@@ -868,6 +868,43 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.count).toBe(1);
       expect(res.body.messages[0].message_id).toBe('msg_alias_pending_1');
     });
+
+    describe('GET /api/v1/relay/history (OTP History by Day)', () => {
+      it('should return 401 without auth', async () => {
+        const res = await request(server).get('/api/v1/relay/history');
+        expect(res.status).toBe(401);
+      });
+
+      it('should return OTP records filtered by date and pairId', async () => {
+        const { a, b, pairId } = await createPairedPair('pair_history_test');
+        const todayStr = new Date().toISOString().split('T')[0];
+
+        // Relay 2 messages
+        await request(server)
+          .post('/api/v1/relay')
+          .set(bearer(a.token))
+          .send(relayBody(pairId, 'hist_msg_001'));
+        await request(server)
+          .post('/api/v1/relay')
+          .set(bearer(a.token))
+          .send(relayBody(pairId, 'hist_msg_002'));
+
+        // Fetch history as Device B (receiver)
+        const res = await request(server)
+          .get(`/api/v1/relay/history?date=${todayStr}&pair_id=${pairId}`)
+          .set(bearer(b.token));
+
+        expect(res.status).toBe(200);
+        expect(res.body.success).toBe(true);
+        expect(res.body.date).toBe(todayStr);
+        expect(res.body.count).toBeGreaterThanOrEqual(2);
+        expect(res.body.records).toBeDefined();
+
+        const ids = res.body.records.map((r: any) => r.message_id);
+        expect(ids).toContain('hist_msg_001');
+        expect(ids).toContain('hist_msg_002');
+      });
+    });
   });
 
   describe('End-to-end pairing & relay flow', () => {

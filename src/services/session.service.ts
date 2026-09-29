@@ -1,4 +1,4 @@
-import { PairEntity, PendingRelayMessage } from '../types/index.js';
+import { PairEntity, PendingRelayMessage, RelayHistoryRecord } from '../types/index.js';
 import { env } from '../config/env.js';
 
 export const PAIRING_CODE_TTL_SECONDS = 600; // 10 minutes
@@ -19,6 +19,7 @@ export class SessionService {
   private pendingMessages: Map<string, PendingRelayMessage[]> = new Map();
   private processedMessageIds = new Set<string>();
   private messageProcessedAt = new Map<string, number>();
+  private relayHistory: RelayHistoryRecord[] = [];
   private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor() {
@@ -206,6 +207,56 @@ export class SessionService {
     return removedCount;
   }
 
+  public addRelayHistory(record: RelayHistoryRecord): void {
+    // Keep max 2000 most recent records in memory
+    this.relayHistory.unshift(record);
+    if (this.relayHistory.length > 2000) {
+      this.relayHistory.pop();
+    }
+  }
+
+  public getRelayHistory(options: {
+    date?: string;
+    pairId?: string;
+    participantDeviceId?: string;
+  }): RelayHistoryRecord[] {
+    let startTimestamp = 0;
+    let endTimestamp = Number.MAX_SAFE_INTEGER;
+
+    if (options.date) {
+      // Parse YYYY-MM-DD
+      const dateParts = options.date.split('-');
+      if (dateParts.length === 3) {
+        const year = parseInt(dateParts[0], 10);
+        const month = parseInt(dateParts[1], 10) - 1;
+        const day = parseInt(dateParts[2], 10);
+        const start = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+        const end = new Date(Date.UTC(year, month, day, 23, 59, 59, 999));
+        startTimestamp = Math.floor(start.getTime() / 1000);
+        endTimestamp = Math.floor(end.getTime() / 1000);
+      }
+    }
+
+    return this.relayHistory.filter((r) => {
+      // Check date range
+      if (r.relayed_at < startTimestamp || r.relayed_at > endTimestamp) {
+        return false;
+      }
+      // Check pairId filter if provided
+      if (options.pairId && r.pair_id !== options.pairId) {
+        return false;
+      }
+      // Check participant security if provided
+      if (options.participantDeviceId) {
+        const pair = this.pairs.get(r.pair_id);
+        if (pair && !this.isParticipant(pair, options.participantDeviceId)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
   public count(): number {
     return this.pairs.size;
   }
@@ -215,6 +266,7 @@ export class SessionService {
     this.pendingMessages.clear();
     this.processedMessageIds.clear();
     this.messageProcessedAt.clear();
+    this.relayHistory = [];
   }
 
   public destroy(): void {

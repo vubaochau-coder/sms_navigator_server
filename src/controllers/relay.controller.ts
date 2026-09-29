@@ -85,6 +85,20 @@ export class RelayController {
       ttl_seconds
     });
 
+    // Record in history for OTP logs & analytics by date
+    sessionService.addRelayHistory({
+      id: pendingMessageId,
+      pair_id,
+      sender_device_id: device.device_id,
+      sender_device_name: device.device_name || 'Sender Device',
+      encrypted_payload,
+      iv,
+      sent_at,
+      relayed_at: now,
+      status: pair.fcm_token ? 'SUCCESS' : 'QUEUED',
+      message_id: message_id ?? pendingMessageId
+    });
+
     // 7. Blind relay: forward the encrypted payload untouched via FCM High-Priority Data message
     if (pair.fcm_token) {
       try {
@@ -169,6 +183,28 @@ export class RelayController {
       success: true,
       count: messages.length,
       messages
+    });
+  }
+
+  public static async getRelayHistory(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const dateParam = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const pairIdParam = typeof req.query.pair_id === 'string' ? req.query.pair_id : undefined;
+
+    // Default to today (YYYY-MM-DD) if not provided
+    const targetDate = dateParam || new Date().toISOString().split('T')[0];
+
+    const records = sessionService.getRelayHistory({
+      date: targetDate,
+      pairId: pairIdParam,
+      participantDeviceId: device.device_id
+    });
+
+    res.status(200).json({
+      success: true,
+      date: targetDate,
+      count: records.length,
+      records
     });
   }
 }

@@ -110,3 +110,24 @@ export interface RelayPayloadResponse {
   duplicate?: boolean;
   relayed_at: number;
 }
+
+export interface RelayHistoryRecord {
+  id: string;
+  pair_id: string;
+  sender_device_id: string;
+  sender_device_name?: string;
+  encrypted_payload: string;
+  iv: string;
+  sent_at: number; // Unix timestamp in seconds
+  relayed_at: number; // Unix timestamp in seconds
+  status: 'SUCCESS' | 'QUEUED' | 'FAILED';
+  message_id?: string;
+}
+
+export interface RelayHistoryResponse {
+  success: boolean;
+  date: string;
+  count: number;
+  records: RelayHistoryRecord[];
+}
+
