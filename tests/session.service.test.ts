@@ -11,42 +11,50 @@ describe('SessionService Unit Tests', () => {
     sessionService.destroy();
   });
 
-  it('should save and retrieve a session correctly', () => {
+  it('should create and retrieve a pair correctly', () => {
     const pairId = 'pair_test123';
-    const fcmToken = 'fake_fcm_token_xyz_12345';
+    const senderId = 'device_sender_001';
 
-    const saved = sessionService.saveSession(pairId, fcmToken, 'Pixel 7', 'android');
-    expect(saved.pairId).toBe(pairId);
-    expect(saved.fcmToken).toBe(fcmToken);
-    expect(saved.deviceName).toBe('Pixel 7');
+    const created = sessionService.createPair(pairId, senderId);
+    expect(created.pair_id).toBe(pairId);
+    expect(created.sender_device_id).toBe(senderId);
 
-    const retrieved = sessionService.getSession(pairId);
+    const retrieved = sessionService.getPair(pairId);
     expect(retrieved).not.toBeNull();
-    expect(retrieved?.pairId).toBe(pairId);
-    expect(retrieved?.fcmToken).toBe(fcmToken);
+    expect(retrieved?.sender_device_id).toBe(senderId);
   });
 
-  it('should return null for expired sessions and remove them', () => {
-    const pairId = 'pair_expired';
-    const fcmToken = 'fake_token';
+  it('should set pairing code and lock after max failed attempts', () => {
+    const pairId = 'pair_bruteforce_test';
+    sessionService.createPair(pairId, 'device_a');
+    sessionService.setPairingCode(pairId, 'hash_of_123456');
 
-    const session = sessionService.saveSession(pairId, fcmToken);
-    // Artificially expire the session
-    session.expiresAt = Math.floor(Date.now() / 1000) - 10;
+    for (let i = 0; i < 4; i++) {
+      expect(sessionService.recordFailedAttempt(pairId)).toBe(i + 1);
+      expect(sessionService.getPair(pairId)?.pairing_code_hash).toBe('hash_of_123456');
+    }
 
-    const retrieved = sessionService.getSession(pairId);
-    expect(retrieved).toBeNull();
-    expect(sessionService.count()).toBe(0);
+    // 5th attempt exhausts budget
+    expect(sessionService.recordFailedAttempt(pairId)).toBe(5);
+    expect(sessionService.getPair(pairId)?.pairing_code_hash).toBeUndefined();
   });
 
-  it('should remove session by pairId', () => {
+  it('should deduplicate messages by message_id', () => {
+    const msgId = 'msg_unique_uuid_999';
+    expect(sessionService.isMessageProcessed(msgId)).toBe(false);
+
+    sessionService.markMessageProcessed(msgId);
+    expect(sessionService.isMessageProcessed(msgId)).toBe(true);
+  });
+
+  it('should remove pair by pairId', () => {
     const pairId = 'pair_to_remove';
-    sessionService.saveSession(pairId, 'token123');
+    sessionService.createPair(pairId, 'sender123');
     expect(sessionService.count()).toBe(1);
 
-    const removed = sessionService.removeSession(pairId);
+    const removed = sessionService.removePair(pairId);
     expect(removed).toBe(true);
-    expect(sessionService.getSession(pairId)).toBeNull();
+    expect(sessionService.getPair(pairId)).toBeNull();
     expect(sessionService.count()).toBe(0);
   });
 });

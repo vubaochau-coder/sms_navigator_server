@@ -4,6 +4,7 @@ export const relayPayloadSchema = z.object({
   pair_id: z
     .string({ required_error: 'pair_id is required' })
     .min(3, 'pair_id must be at least 3 characters'),
+  message_id: z.string().min(1).max(256).optional(),
   device_id: z.string().optional(),
   encrypted_payload: z
     .string({ required_error: 'encrypted_payload is required' })

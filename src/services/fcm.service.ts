@@ -9,6 +9,7 @@ export interface FcmRelayMessageParams {
   iv: string;
   sentAt: number;
   ttlSeconds?: number;
+  relayMessageId?: string;
 }
 
 export class FcmService {
@@ -19,7 +20,7 @@ export class FcmService {
   }
 
   public async sendRelayDataMessage(params: FcmRelayMessageParams): Promise<string> {
-    const { fcmToken, pairId, encryptedPayload, iv, sentAt, ttlSeconds = 300 } = params;
+    const { fcmToken, pairId, encryptedPayload, iv, sentAt, ttlSeconds = 300, relayMessageId } = params;
 
     // Check for mock mode or testing
     if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
@@ -29,15 +30,21 @@ export class FcmService {
       return mockMessageId;
     }
 
+    const data: Record<string, string> = {
+      pair_id: pairId,
+      encrypted_payload: encryptedPayload,
+      iv: iv,
+      sent_at: sentAt.toString(),
+      type: 'OTP_RELAY'
+    };
+
+    if (relayMessageId) {
+      data.message_id = relayMessageId;
+    }
+
     const message: admin.messaging.Message = {
       token: fcmToken,
-      data: {
-        pair_id: pairId,
-        encrypted_payload: encryptedPayload,
-        iv: iv,
-        sent_at: sentAt.toString(),
-        type: 'OTP_RELAY'
-      },
+      data,
       android: {
         priority: 'high',
         ttl: ttlSeconds * 1000 // In milliseconds

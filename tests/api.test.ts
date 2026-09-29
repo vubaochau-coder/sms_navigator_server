@@ -1,12 +1,61 @@
 import request from 'supertest';
+import * as crypto from 'crypto';
 import { createApp } from '../src/app.js';
 import { sessionService } from '../src/services/session.service.js';
+import { deviceService, sha256Hex } from '../src/services/device.service.js';
+import { fcmService } from '../src/services/fcm.service.js';
 
 describe('SMS Navigator Server Integration Tests', () => {
   const app = createApp();
 
+  const nowSeconds = (): number => Math.floor(Date.now() / 1000);
+
+  const registerDevice = async (deviceId?: string): Promise<{ deviceId: string; token: string }> => {
+    const res = await request(app)
+      .post('/api/v1/devices/register')
+      .send(deviceId ? { device_id: deviceId } : {});
+    return { deviceId: res.body.device_id, token: res.body.token };
+  };
+
+  const bearer = (token: string): Record<string, string> => ({
+    Authorization: `Bearer ${token}`
+  });
+
+  const createPendingPair = async (pairId: string, senderId?: string, receiverId?: string) => {
+    const a = await registerDevice(senderId ?? `A_${pairId}`);
+    const b = await registerDevice(receiverId ?? `B_${pairId}`);
+    const init = await request(app)
+      .post('/api/v1/pair/init')
+      .set(bearer(a.token))
+      .send({ pair_id: pairId });
+    return { a, b, code: init.body.pairing_code as string };
+  };
+
+  const createPairedPair = async (pairId: string) => {
+    const a = await registerDevice(`A_${pairId}`);
+    const b = await registerDevice(`B_${pairId}`);
+    const c = await registerDevice(`C_${pairId}`);
+    const init = await request(app)
+      .post('/api/v1/pair/init')
+      .set(bearer(a.token))
+      .send({ pair_id: pairId });
+    await request(app)
+      .post('/api/v1/pair/confirm')
+      .set(bearer(b.token))
+      .send({
+        pair_id: pairId,
+        pairing_code: init.body.pairing_code,
+        fcm_token: `fcm_receiver_${pairId}_12345`,
+        device_name: 'Receiver Phone',
+        platform: 'android'
+      });
+    return { a, b, c, pairId };
+  };
+
   beforeEach(() => {
     sessionService.clearAll();
+    deviceService.clearAll();
+    jest.restoreAllMocks();
   });
 
   afterAll(() => {
@@ -28,136 +77,698 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
   });
 
-  describe('POST /api/v1/pair/confirm', () => {
+  describe('POST /api/v1/devices/register', () => {
+    it('should register a device and return a raw CSPRNG token (201)', async () => {
+      const res = await request(app).post('/api/v1/devices/register').send({
+        device_id: 'device_A_register',
+        device_name: 'Pixel 8 (Vietnam)',
+        platform: 'android'
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.device_id).toBe('device_A_register');
+      expect(res.body.token).toMatch(/^[a-f0-9]{64}$/);
+      expect(res.body.token_type).toBe('Bearer');
+      expect(res.body.created_at).toBeLessThanOrEqual(nowSeconds());
+    });
+
+    it('should auto-generate a unique device_id when not provided', async () => {
+      const first = await request(app).post('/api/v1/devices/register').send({});
+      const second = await request(app).post('/api/v1/devices/register').send({});
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(first.body.device_id).toBeDefined();
+      expect(second.body.device_id).toBeDefined();
+      expect(first.body.device_id).not.toBe(second.body.device_id);
+    });
+
+    it('should store only the SHA-256 hash of the token, never the plaintext', async () => {
+      const { token } = await registerDevice('device_hash_check');
+      const device = deviceService.findByDeviceId('device_hash_check');
+
+      expect(device).not.toBeNull();
+      expect(device!.token_hash).toBe(crypto.createHash('sha256').update(token).digest('hex'));
+      expect(JSON.stringify(device)).not.toContain(token);
+    });
+
+    it('should invalidate the previously issued token when re-registering the same device_id', async () => {
+      const first = await registerDevice('device_re_register');
+      const second = await registerDevice('device_re_register');
+      expect(first.token).not.toBe(second.token);
+
+      const oldTokenRes = await request(app)
+        .put('/api/v1/devices/fcm-token')
+        .set(bearer(first.token))
+        .send({ fcm_token: 'fcm_attempt_with_old_token_12345' });
+      expect(oldTokenRes.status).toBe(401);
+
+      const newTokenRes = await request(app)
+        .put('/api/v1/devices/fcm-token')
+        .set(bearer(second.token))
+        .send({ fcm_token: 'fcm_attempt_with_new_token_12345' });
+      expect(newTokenRes.status).toBe(200);
+    });
+
     it('should reject invalid payload with 400', async () => {
       const res = await request(app)
-        .post('/api/v1/pair/confirm')
-        .send({ pair_id: 'ab' }); // Too short and missing fcm_token
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'ab', platform: 'unknown_platform' });
 
       expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
       expect(res.body.error).toBe('VALIDATION_ERROR');
     });
+  });
 
-    it('should register receiver device session with 200', async () => {
+  describe('PUT /api/v1/devices/fcm-token', () => {
+    it('should return 401 when Authorization header is missing', async () => {
+      const res = await request(app)
+        .put('/api/v1/devices/fcm-token')
+        .send({ fcm_token: 'fcm_token_without_auth_12345' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('UNAUTHORIZED');
+    });
+
+    it('should return 401 for an unknown token', async () => {
+      const res = await request(app)
+        .put('/api/v1/devices/fcm-token')
+        .set(bearer('totally_unknown_token_value_12345'))
+        .send({ fcm_token: 'fcm_token_with_bad_auth_12345' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('UNAUTHORIZED');
+    });
+
+    it('should return 401 for malformed Authorization header (not Bearer)', async () => {
+      const res = await request(app)
+        .put('/api/v1/devices/fcm-token')
+        .set('Authorization', 'Basic dXNlcjpwYXNz')
+        .send({ fcm_token: 'fcm_token_basic_auth_12345' });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('should return 400 when fcm_token is missing or too short', async () => {
+      const { token } = await registerDevice('device_fcm_invalid');
+
+      const missing = await request(app).put('/api/v1/devices/fcm-token').set(bearer(token)).send({});
+      expect(missing.status).toBe(400);
+      expect(missing.body.error).toBe('VALIDATION_ERROR');
+
+      const tooShort = await request(app)
+        .put('/api/v1/devices/fcm-token')
+        .set(bearer(token))
+        .send({ fcm_token: 'short' });
+      expect(tooShort.status).toBe(400);
+    });
+
+    it('should update the FCM token of the authenticated device', async () => {
+      const { token, deviceId } = await registerDevice('device_fcm_update');
+
+      const res = await request(app)
+        .put('/api/v1/devices/fcm-token')
+        .set(bearer(token))
+        .send({ fcm_token: 'fcm_updated_token_value_12345' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.device_id).toBe(deviceId);
+      expect(deviceService.findByDeviceId(deviceId)?.fcm_token).toBe('fcm_updated_token_value_12345');
+    });
+  });
+
+  describe('POST /api/v1/pair/init (Device A)', () => {
+    it('should return 401 without auth', async () => {
+      const res = await request(app).post('/api/v1/pair/init').send({ pair_id: 'pair_no_auth' });
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('UNAUTHORIZED');
+    });
+
+    it('should create a pair and return pair_id with a 6-digit code (201)', async () => {
+      const { token } = await registerDevice('device_A_init');
+
+      const res = await request(app)
+        .post('/api/v1/pair/init')
+        .set(bearer(token))
+        .send({ pair_id: 'pair_init_001' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.pair_id).toBe('pair_init_001');
+      expect(res.body.pairing_code).toMatch(/^\d{6}$/);
+      expect(res.body.expires_at).toBeGreaterThanOrEqual(nowSeconds() + 590);
+
+      const pair = sessionService.getPair('pair_init_001');
+      expect(pair?.sender_device_id).toBe('device_A_init');
+      expect(pair?.pairing_code_hash).toBe(sha256Hex(res.body.pairing_code));
+      expect(JSON.stringify(pair)).not.toContain(res.body.pairing_code);
+    });
+
+    it('should auto-generate pair_id when omitted', async () => {
+      const { token } = await registerDevice('device_A_init_auto');
+
+      const res = await request(app).post('/api/v1/pair/init').set(bearer(token)).send({});
+
+      expect(res.status).toBe(201);
+      expect(res.body.pair_id).toBeDefined();
+      expect(sessionService.getPair(res.body.pair_id)?.sender_device_id).toBe('device_A_init_auto');
+    });
+
+    it('should let Device A re-init the same pair with a fresh code', async () => {
+      const a = await registerDevice('device_A_reinit');
+      const b = await registerDevice('device_B_reinit');
+
+      const first = await request(app)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.token))
+        .send({ pair_id: 'pair_reinit' });
+      const second = await request(app)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.token))
+        .send({ pair_id: 'pair_reinit' });
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(second.body.pairing_code).not.toBe(first.body.pairing_code);
+
+      const confirm = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
+        .send({ pair_id: 'pair_reinit', pairing_code: second.body.pairing_code, fcm_token: 'fcm_reinit_receiver_12345' });
+      expect(confirm.status).toBe(200);
+    });
+
+    it('should return 403 when a foreign device (Device C) initializes an existing pair_id', async () => {
+      const a = await registerDevice('device_A_owner');
+      const c = await registerDevice('device_C_intruder');
+
+      await request(app).post('/api/v1/pair/init').set(bearer(a.token)).send({ pair_id: 'pair_hijack' });
+
+      const res = await request(app)
+        .post('/api/v1/pair/init')
+        .set(bearer(c.token))
+        .send({ pair_id: 'pair_hijack' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('FORBIDDEN');
+    });
+
+    it('should return 409 when the pair has already been confirmed', async () => {
+      const { a, pairId } = await createPairedPair('pair_conflicted');
+
+      const res = await request(app)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.token))
+        .send({ pair_id: pairId });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('PAIR_ALREADY_CONFIRMED');
+    });
+  });
+
+  describe('POST /api/v1/pair/confirm (Device B)', () => {
+    it('should return 401 without auth', async () => {
       const res = await request(app)
         .post('/api/v1/pair/confirm')
+        .send({ pair_id: 'pair_confirm_noauth', pairing_code: '123456', fcm_token: 'fcm_token_123456' });
+      expect(res.status).toBe(401);
+    });
+
+    it('should reject invalid payload with 400', async () => {
+      const { token } = await registerDevice('device_B_invalid_payload');
+
+      const res = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(token))
+        .send({ pair_id: 'ab', pairing_code: 'abcdef' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+    });
+
+    it('should return 404 for an unknown pair_id', async () => {
+      const { token } = await registerDevice('device_B_unknown_pair');
+
+      const res = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(token))
+        .send({ pair_id: 'pair_missing', pairing_code: '123456', fcm_token: 'fcm_token_123456' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('PAIR_NOT_FOUND');
+    });
+
+    it('should block Device A from confirming its own pair (400)', async () => {
+      const { a, code } = await createPendingPair('pair_self_block');
+
+      const res = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(a.token))
+        .send({ pair_id: 'pair_self_block', pairing_code: code, fcm_token: 'fcm_self_pair_12345' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('SELF_PAIRING_NOT_ALLOWED');
+      expect(sessionService.getPair('pair_self_block')?.pairing_attempts).toBe(0);
+    });
+
+    it('should reject an incorrect code with 400 and count the failed attempt', async () => {
+      const { b } = await createPendingPair('pair_wrong_code');
+
+      const res = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
+        .send({ pair_id: 'pair_wrong_code', pairing_code: '000000', fcm_token: 'fcm_wrong_code_12345' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('INVALID_PAIRING_CODE');
+      expect(res.body.message).toContain('4 attempts remaining');
+      expect(sessionService.getPair('pair_wrong_code')?.pairing_attempts).toBe(1);
+    });
+
+    it('should lock the pair after 5 failed attempts (429), even with the correct code', async () => {
+      const { b, code } = await createPendingPair('pair_locked');
+
+      for (let i = 0; i < 5; i++) {
+        const res = await request(app)
+          .post('/api/v1/pair/confirm')
+          .set(bearer(b.token))
+          .send({ pair_id: 'pair_locked', pairing_code: '000000', fcm_token: 'fcm_locked_12345' });
+        expect(res.status).toBe(400);
+      }
+
+      const locked = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
+        .send({ pair_id: 'pair_locked', pairing_code: code, fcm_token: 'fcm_locked_12345' });
+
+      expect(locked.status).toBe(429);
+      expect(locked.body.error).toBe('TOO_MANY_ATTEMPTS');
+    });
+
+    it('should return 400 when the pairing code has expired', async () => {
+      const { b, code } = await createPendingPair('pair_expired_code');
+
+      const pair = sessionService.getPair('pair_expired_code')!;
+      pair.pairing_code_expires_at = nowSeconds() - 10;
+
+      const res = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
+        .send({ pair_id: 'pair_expired_code', pairing_code: code, fcm_token: 'fcm_expired_12345' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('PAIRING_CODE_EXPIRED');
+    });
+
+    it('should bind Device B with the correct code and clear the code (one-time use)', async () => {
+      const { b, code } = await createPendingPair('pair_confirm_ok');
+
+      const res = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
         .send({
-          pair_id: 'pair_test_abc123',
-          fcm_token: 'fake_valid_fcm_token_long_string_12345',
+          pair_id: 'pair_confirm_ok',
+          pairing_code: code,
+          fcm_token: 'fcm_receiver_confirmed_12345',
           device_name: 'Samsung S24 (Malaysia)',
           platform: 'android'
         });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.pair_id).toBe('pair_test_abc123');
-      expect(res.body.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+      expect(res.body.pair_id).toBe('pair_confirm_ok');
+      expect(res.body.paired_at).toBeLessThanOrEqual(nowSeconds());
+      expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
+
+      const pair = sessionService.getPair('pair_confirm_ok');
+      expect(pair?.receiver_device_id).toBe(`B_pair_confirm_ok`);
+      expect(pair?.fcm_token).toBe('fcm_receiver_confirmed_12345');
+      expect(pair?.pairing_code_hash).toBeUndefined();
+      expect(JSON.stringify(pair)).not.toContain(code);
+
+      const reuse = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
+        .send({ pair_id: 'pair_confirm_ok', pairing_code: code, fcm_token: 'fcm_receiver_confirmed_12345' });
+      expect(reuse.status).toBe(409);
+      expect(reuse.body.error).toBe('PAIR_ALREADY_CONFIRMED');
     });
   });
 
-  describe('GET /api/v1/pair/status/:pairId', () => {
-    it('should return is_paired false when pairId is not registered', async () => {
-      const res = await request(app).get('/api/v1/pair/status/pair_unknown');
-      expect(res.status).toBe(200);
-      expect(res.body.is_paired).toBe(false);
+  describe('GET /api/v1/pair/status/:pairId (ownership enforced)', () => {
+    it('should return 401 without auth', async () => {
+      const res = await request(app).get('/api/v1/pair/status/pair_status_noauth');
+      expect(res.status).toBe(401);
     });
 
-    it('should return is_paired true when paired', async () => {
-      const pairId = 'pair_active_999';
-      sessionService.saveSession(pairId, 'fake_token_12345', 'Pixel 8', 'android');
+    it('should return 404 when the pair does not exist', async () => {
+      const { token } = await registerDevice('device_status_unknown');
 
-      const res = await request(app).get(`/api/v1/pair/status/${pairId}`);
+      const res = await request(app)
+        .get('/api/v1/pair/status/pair_unknown_404')
+        .set(bearer(token));
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('PAIR_NOT_FOUND');
+    });
+
+    it('should let Device A (sender) view pending pair status', async () => {
+      const { a } = await createPendingPair('pair_status_pending');
+
+      const res = await request(app).get('/api/v1/pair/status/pair_status_pending').set(bearer(a.token));
+
+      expect(res.status).toBe(200);
+      expect(res.body.pair_id).toBe('pair_status_pending');
+      expect(res.body.is_paired).toBe(false);
+      expect(res.body.sender_device_id).toBe(`A_pair_status_pending`);
+      expect(res.body.pairing_attempts_remaining).toBe(5);
+    });
+
+    it('should let Device B (receiver) view paired status', async () => {
+      const { b } = await createPairedPair('pair_status_paired');
+
+      const res = await request(app).get('/api/v1/pair/status/pair_status_paired').set(bearer(b.token));
+
       expect(res.status).toBe(200);
       expect(res.body.is_paired).toBe(true);
-      expect(res.body.device_name).toBe('Pixel 8');
+      expect(res.body.receiver_device_id).toBe(`B_pair_status_paired`);
+      expect(res.body.device_name).toBe('Receiver Phone');
+      expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
+    });
+
+    it('should return 403 Forbidden for Device C (not a participant)', async () => {
+      const { c } = await createPairedPair('pair_status_forbidden');
+
+      const res = await request(app).get('/api/v1/pair/status/pair_status_forbidden').set(bearer(c.token));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('FORBIDDEN');
     });
   });
 
-  describe('POST /api/v1/relay and /api/v1/relay/otp', () => {
-    const pairId = 'pair_relay_demo';
-    const fakeToken = 'fake_fcm_token_for_relay_test_12345';
-
-    beforeEach(() => {
-      sessionService.saveSession(pairId, fakeToken, 'Test Device', 'android');
+  describe('DELETE /api/v1/pair/:pairId (ownership enforced)', () => {
+    it('should return 401 without auth', async () => {
+      const res = await request(app).delete('/api/v1/pair/pair_revoke_noauth');
+      expect(res.status).toBe(401);
     });
 
-    it('should return 404 RECEIVER_NOT_PAIRED if pair_id does not exist', async () => {
+    it('should return 404 when the pair does not exist', async () => {
+      const { token } = await registerDevice('device_revoke_unknown');
+
+      const res = await request(app).delete('/api/v1/pair/pair_unknown_revoke').set(bearer(token));
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('PAIR_NOT_FOUND');
+    });
+
+    it('should return 403 Forbidden for Device C (not a participant)', async () => {
+      const { c } = await createPairedPair('pair_revoke_forbidden');
+
+      const res = await request(app).delete('/api/v1/pair/pair_revoke_forbidden').set(bearer(c.token));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('FORBIDDEN');
+      expect(sessionService.getPair('pair_revoke_forbidden')).not.toBeNull();
+    });
+
+    it('should let Device A revoke the pair', async () => {
+      const { a } = await createPairedPair('pair_revoke_by_a');
+
+      const res = await request(app).delete('/api/v1/pair/pair_revoke_by_a').set(bearer(a.token));
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      const check = await request(app)
+        .get('/api/v1/pair/status/pair_revoke_by_a')
+        .set(bearer(a.token));
+      expect(check.status).toBe(404);
+    });
+
+    it('should let Device B revoke the pair', async () => {
+      const { b } = await createPairedPair('pair_revoke_by_b');
+
+      const res = await request(app).delete('/api/v1/pair/pair_revoke_by_b').set(bearer(b.token));
+      expect(res.status).toBe(200);
+      expect(sessionService.getPair('pair_revoke_by_b')).toBeNull();
+    });
+  });
+
+  describe('POST /api/v1/relay & /api/v1/relay/otp (Blind Relay)', () => {
+    const relayBody = (pairId: string, messageId?: string) => ({
+      pair_id: pairId,
+      ...(messageId ? { message_id: messageId } : {}),
+      encrypted_payload: 'U2FsdGVkX19mock_encrypted_otp_bytes==',
+      iv: 'aXZfc2FsdF8xMmJ5dGVz',
+      sent_at: nowSeconds(),
+      ttl_seconds: 300
+    });
+
+    it('should return 401 without auth', async () => {
       const res = await request(app)
         .post('/api/v1/relay')
-        .send({
-          pair_id: 'pair_non_existent',
-          encrypted_payload: 'encrypted_content_base64',
-          iv: 'dGVzdF9pdg==',
-          sent_at: Math.floor(Date.now() / 1000),
-          ttl_seconds: 300
-        });
+        .send(relayBody('pair_relay_noauth', 'msg_noauth_1'));
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('UNAUTHORIZED');
+    });
+
+    it('should return 404 when the pair does not exist', async () => {
+      const { a } = await createPairedPair('pair_relay_suite');
+
+      const res = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody('pair_never_created', 'msg_missing_pair_1'));
 
       expect(res.status).toBe(404);
       expect(res.body.error).toBe('RECEIVER_NOT_PAIRED');
     });
 
-    it('should return 400 PAYLOAD_EXPIRED if sent_at is too old', async () => {
-      const now = Math.floor(Date.now() / 1000);
+    it('should return 404 when the receiver has not confirmed the pair yet', async () => {
+      const { a } = await createPendingPair('pair_relay_pending');
+
       const res = await request(app)
         .post('/api/v1/relay')
-        .send({
-          pair_id: pairId,
-          encrypted_payload: 'encrypted_content_base64',
-          iv: 'dGVzdF9pdg==',
-          sent_at: now - 500, // 500 seconds ago, exceeds 300s TTL
-          ttl_seconds: 300
-        });
+        .set(bearer(a.token))
+        .send(relayBody('pair_relay_pending', 'msg_pending_pair_1'));
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('RECEIVER_NOT_PAIRED');
+    });
+
+    it('should return 400 PAYLOAD_EXPIRED when sent_at is too old', async () => {
+      const { a, pairId } = await createPairedPair('pair_relay_expired');
+
+      const res = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send({ ...relayBody(pairId, 'msg_expired_1'), sent_at: nowSeconds() - 500 });
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('PAYLOAD_EXPIRED');
     });
 
-    it('should successfully relay OTP payload to paired receiver', async () => {
+    it('should return 403 when Device B (receiver) tries to relay', async () => {
+      const { b, pairId } = await createPairedPair('pair_relay_by_receiver');
+
       const res = await request(app)
         .post('/api/v1/relay')
-        .send({
-          pair_id: pairId,
-          device_id: 'sender_phone_viettel',
-          encrypted_payload: 'U2FsdGVkX19mock_encrypted_otp_bytes==',
-          iv: 'aXZfc2FsdF8xMmJ5dGVz',
-          sent_at: Math.floor(Date.now() / 1000),
-          ttl_seconds: 300
-        });
+        .set(bearer(b.token))
+        .send(relayBody(pairId, 'msg_from_receiver_1'));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('FORBIDDEN');
+    });
+
+    it('should return 403 when Device C (foreign device) tries to relay', async () => {
+      const { c, pairId } = await createPairedPair('pair_relay_by_c');
+
+      const res = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(c.token))
+        .send(relayBody(pairId, 'msg_from_c_1'));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('FORBIDDEN');
+    });
+
+    it('should relay the OTP payload when sent by Device A (sender)', async () => {
+      const { a, pairId } = await createPairedPair('pair_relay_by_sender');
+
+      const res = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_from_sender_1'));
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.message_id).toBeDefined();
-      expect(res.body.relayed_at).toBeDefined();
+      expect(res.body.message_id).toBe('msg_from_sender_1');
+      expect(res.body.duplicate).toBeUndefined();
+      expect(res.body.relayed_at).toBeLessThanOrEqual(nowSeconds());
+    });
+
+    it('should ignore duplicate message_id within the 10 minute window', async () => {
+      const { a, pairId } = await createPairedPair('pair_relay_dedup');
+      const spy = jest
+        .spyOn(fcmService, 'sendRelayDataMessage')
+        .mockResolvedValue('projects/mock/messages/dedup_1');
+
+      const first = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_dup_001'));
+      expect(first.status).toBe(200);
+      expect(first.body.duplicate).toBeUndefined();
+
+      const duplicate = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_dup_001'));
+      expect(duplicate.status).toBe(200);
+      expect(duplicate.body.success).toBe(true);
+      expect(duplicate.body.duplicate).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      const differentMessage = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_dup_002'));
+      expect(differentMessage.status).toBe(200);
+      expect(differentMessage.body.duplicate).toBeUndefined();
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it('should forward the payload untouched to the receiver FCM token (blind relay)', async () => {
+      const { a, pairId } = await createPairedPair('pair_relay_blind');
+      const spy = jest
+        .spyOn(fcmService, 'sendRelayDataMessage')
+        .mockResolvedValue('projects/mock/messages/blind_1');
+
+      const res = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_blind_1'));
+
+      expect(res.status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fcmToken: 'fcm_receiver_pair_relay_blind_12345',
+          pairId,
+          encryptedPayload: 'U2FsdGVkX19mock_encrypted_otp_bytes==',
+          iv: 'aXZfc2FsdF8xMmJ5dGVz',
+          relayMessageId: 'msg_blind_1'
+        })
+      );
     });
 
     it('should also work on alias endpoint /api/v1/relay/otp', async () => {
+      const { a, pairId } = await createPairedPair('pair_relay_alias');
+
       const res = await request(app)
         .post('/api/v1/relay/otp')
-        .send({
-          pair_id: pairId,
-          encrypted_payload: 'U2FsdGVkX19mock_encrypted_otp_bytes==',
-          iv: 'aXZfc2FsdF8xMmJ5dGVz',
-          sent_at: Math.floor(Date.now() / 1000)
-        });
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_alias_1'));
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.message_id).toBeDefined();
+      expect(res.body.message_id).toBe('msg_alias_1');
     });
   });
 
-  describe('DELETE /api/v1/pair/:pairId', () => {
-    it('should revoke paired session', async () => {
-      const pairId = 'pair_to_revoke';
-      sessionService.saveSession(pairId, 'fcm_token_12345');
+  describe('End-to-end pairing & relay flow', () => {
+    it('should complete register → init → confirm → status → relay → dedup → revoke', async () => {
+      const regA = await request(app)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'e2e_device_A', device_name: 'Sender', platform: 'android' });
+      const regB = await request(app)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'e2e_device_B', device_name: 'Receiver', platform: 'android' });
+      expect(regA.status).toBe(201);
+      expect(regB.status).toBe(201);
 
-      const res = await request(app).delete(`/api/v1/pair/${pairId}`);
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
+      const tokenA = regA.body.token as string;
+      const tokenB = regB.body.token as string;
 
-      const check = await request(app).get(`/api/v1/pair/status/${pairId}`);
-      expect(check.body.is_paired).toBe(false);
+      const init = await request(app).post('/api/v1/pair/init').set(bearer(tokenA)).send({});
+      expect(init.status).toBe(201);
+      const pairId = init.body.pair_id as string;
+      const code = init.body.pairing_code as string;
+
+      const statusBefore = await request(app)
+        .get(`/api/v1/pair/status/${pairId}`)
+        .set(bearer(tokenA));
+      expect(statusBefore.status).toBe(200);
+      expect(statusBefore.body.is_paired).toBe(false);
+
+      const confirm = await request(app)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(tokenB))
+        .send({
+          pair_id: pairId,
+          pairing_code: code,
+          fcm_token: 'e2e_fcm_receiver_token_12345',
+          device_name: 'Receiver Phone',
+          platform: 'android'
+        });
+      expect(confirm.status).toBe(200);
+
+      const statusAfter = await request(app)
+        .get(`/api/v1/pair/status/${pairId}`)
+        .set(bearer(tokenB));
+      expect(statusAfter.status).toBe(200);
+      expect(statusAfter.body.is_paired).toBe(true);
+      expect(statusAfter.body.receiver_device_id).toBe('e2e_device_B');
+
+      const relay = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(tokenA))
+        .send({
+          pair_id: pairId,
+          message_id: 'e2e_msg_001',
+          encrypted_payload: 'e2e_encrypted_payload_bytes==',
+          iv: 'aXZfc2FsdF8xMmJ5dGVz',
+          sent_at: nowSeconds()
+        });
+      expect(relay.status).toBe(200);
+      expect(relay.body.success).toBe(true);
+      expect(relay.body.message_id).toBe('e2e_msg_001');
+
+      const relayDuplicate = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(tokenA))
+        .send({
+          pair_id: pairId,
+          message_id: 'e2e_msg_001',
+          encrypted_payload: 'e2e_encrypted_payload_bytes==',
+          iv: 'aXZfc2FsdF8xMmJ5dGVz',
+          sent_at: nowSeconds()
+        });
+      expect(relayDuplicate.status).toBe(200);
+      expect(relayDuplicate.body.duplicate).toBe(true);
+
+      const relayByReceiver = await request(app)
+        .post('/api/v1/relay')
+        .set(bearer(tokenB))
+        .send({
+          pair_id: pairId,
+          message_id: 'e2e_msg_002',
+          encrypted_payload: 'e2e_encrypted_payload_bytes==',
+          iv: 'aXZfc2FsdF8xMmJ5dGVz',
+          sent_at: nowSeconds()
+        });
+      expect(relayByReceiver.status).toBe(403);
+
+      const revoke = await request(app).delete(`/api/v1/pair/${pairId}`).set(bearer(tokenA));
+      expect(revoke.status).toBe(200);
+
+      const statusRevoked = await request(app)
+        .get(`/api/v1/pair/status/${pairId}`)
+        .set(bearer(tokenA));
+      expect(statusRevoked.status).toBe(404);
     });
   });
 });

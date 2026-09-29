@@ -1,10 +1,13 @@
 import rateLimit from 'express-rate-limit';
 
+const skipInTest = (): boolean => process.env.NODE_ENV === 'test';
+
 export const relayRateLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
   max: 60, // Limit each IP to 60 relay requests per minute
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: {
     success: false,
     error: 'TOO_MANY_REQUESTS',
@@ -17,9 +20,23 @@ export const pairRateLimiter = rateLimit({
   max: 30, // Limit each IP to 30 pair requests per 5 minutes
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: {
     success: false,
     error: 'TOO_MANY_REQUESTS',
     message: 'Too many pairing attempts. Please try again later.'
+  }
+});
+
+export const deviceRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Limit each IP to 20 device registrations per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+  message: {
+    success: false,
+    error: 'TOO_MANY_REQUESTS',
+    message: 'Too many device registrations. Please try again later.'
   }
 });
