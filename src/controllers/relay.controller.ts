@@ -60,7 +60,17 @@ export class RelayController {
       return;
     }
 
-    // 5. Message deduplication (10 minutes window)
+    // 5. Sender active toggle check: sender may pause forwarding to this pair
+    if (pair.is_active === false) {
+      res.status(403).json({
+        success: false,
+        error: 'RELAY_PAUSED_BY_SENDER',
+        message: 'Relay is currently paused by the sender device for this pair.'
+      });
+      return;
+    }
+
+    // 6. Message deduplication (10 minutes window)
     if (message_id && sessionService.isMessageProcessed(message_id)) {
       const response: RelayPayloadResponse = {
         success: true,

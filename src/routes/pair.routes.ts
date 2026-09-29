@@ -16,6 +16,15 @@ router.post('/confirm', authenticate, pairRateLimiter, validateBody(pairConfirmS
 // Query pairing status (restricted to Device A / Device B of the pair)
 router.get('/status/:pairId', authenticate, validateParams(pairIdParamSchema), PairController.getPairStatus);
 
+// Sender view: list all receivers paired with this sender
+router.get('/receivers', authenticate, PairController.getPairedReceivers);
+
+// Receiver view: list all senders paired with this receiver (read-only active status)
+router.get('/senders', authenticate, PairController.getPairedSenders);
+
+// Sender toggle: enable/pause relaying to a specific pair
+router.patch('/:pairId/toggle', authenticate, validateParams(pairIdParamSchema), PairController.togglePairActive);
+
 // Revoke pairing (restricted to Device A / Device B of the pair)
 router.delete('/:pairId', authenticate, validateParams(pairIdParamSchema), PairController.revokePairing);
 

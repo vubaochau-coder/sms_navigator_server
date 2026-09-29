@@ -34,12 +34,14 @@ export class SessionService {
     }
   }
 
-  public createPair(pairId: string, senderDeviceId: string): PairEntity {
+  public createPair(pairId: string, senderDeviceId: string, senderDeviceName?: string): PairEntity {
     const now = Math.floor(Date.now() / 1000);
 
     const pair: PairEntity = {
       pair_id: pairId,
       sender_device_id: senderDeviceId,
+      sender_device_name: senderDeviceName,
+      is_active: true,
       pairing_attempts: 0,
       created_at: now,
       last_active_at: now
@@ -47,6 +49,44 @@ export class SessionService {
 
     this.pairs.set(pairId, pair);
     return pair;
+  }
+
+  public getPairsBySender(senderDeviceId: string): PairEntity[] {
+    const now = Math.floor(Date.now() / 1000);
+    const list: PairEntity[] = [];
+    for (const pair of this.pairs.values()) {
+      if (pair.sender_device_id === senderDeviceId && pair.receiver_device_id) {
+        if (pair.expires_at !== undefined && pair.expires_at <= now) {
+          continue;
+        }
+        list.push(pair);
+      }
+    }
+    return list;
+  }
+
+  public getPairsByReceiver(receiverDeviceId: string): PairEntity[] {
+    const now = Math.floor(Date.now() / 1000);
+    const list: PairEntity[] = [];
+    for (const pair of this.pairs.values()) {
+      if (pair.receiver_device_id === receiverDeviceId) {
+        if (pair.expires_at !== undefined && pair.expires_at <= now) {
+          continue;
+        }
+        list.push(pair);
+      }
+    }
+    return list;
+  }
+
+  public setPairActive(pairId: string, isActive: boolean, senderDeviceId: string): boolean {
+    const pair = this.getPair(pairId);
+    if (!pair) return false;
+    if (pair.sender_device_id !== senderDeviceId) return false;
+
+    pair.is_active = isActive;
+    pair.last_active_at = Math.floor(Date.now() / 1000);
+    return true;
   }
 
   public getPair(pairId: string): PairEntity | null {

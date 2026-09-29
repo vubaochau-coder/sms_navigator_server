@@ -174,7 +174,8 @@ export class PairController {
       pairing_code_expires_at: pair.pairing_code_expires_at,
       pairing_code_expired:
         pair.pairing_code_expires_at !== undefined && pair.pairing_code_expires_at <= now,
-      pairing_attempts_remaining: Math.max(0, MAX_PAIRING_ATTEMPTS - pair.pairing_attempts)
+      pairing_attempts_remaining: Math.max(0, MAX_PAIRING_ATTEMPTS - pair.pairing_attempts),
+      is_active: pair.is_active !== false
     };
 
     res.status(200).json(response);
@@ -208,6 +209,101 @@ export class PairController {
     res.status(200).json({
       success: true,
       message: 'Pairing session revoked successfully'
+    });
+  }
+
+  /**
+   * Sender view: list all receivers paired with this sender device.
+   */
+  public static async getPairedReceivers(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const pairs = sessionService.getPairsBySender(device.device_id);
+
+    const receivers = pairs.map((p) => ({
+      pair_id: p.pair_id,
+      receiver_device_id: p.receiver_device_id!,
+      device_name: p.device_name || 'Thiết bị nhận',
+      platform: p.platform || 'Android',
+      paired_at: p.paired_at ?? p.created_at,
+      last_active_at: p.last_active_at,
+      is_active: p.is_active !== false
+    }));
+
+    res.status(200).json({
+      success: true,
+      count: receivers.length,
+      receivers
+    });
+  }
+
+  /**
+   * Receiver view: list all senders paired with this receiver device.
+   * Read-only connection status for receiver.
+   */
+  public static async getPairedSenders(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const pairs = sessionService.getPairsByReceiver(device.device_id);
+
+    const senders = pairs.map((p) => ({
+      pair_id: p.pair_id,
+      sender_device_id: p.sender_device_id,
+      device_name: p.sender_device_name || 'Thiết bị gửi',
+      platform: 'Android',
+      paired_at: p.paired_at ?? p.created_at,
+      last_active_at: p.last_active_at,
+      is_active: p.is_active !== false // Indicates whether sender has enabled or paused relay
+    }));
+
+    res.status(200).json({
+      success: true,
+      count: senders.length,
+      senders
+    });
+  }
+
+  /**
+   * Sender toggle: enable or pause relaying to a specific paired receiver.
+   */
+  public static async togglePairActive(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const pairId = String(req.params.pairId);
+    const { is_active } = req.body as { is_active?: boolean };
+
+    if (typeof is_active !== 'boolean') {
+      res.status(400).json({
+        success: false,
+        error: 'INVALID_INPUT',
+        message: 'Field "is_active" must be a boolean.'
+      });
+      return;
+    }
+
+    const pair = sessionService.getPair(pairId);
+    if (!pair) {
+      res.status(404).json({
+        success: false,
+        error: 'PAIR_NOT_FOUND',
+        message: `No pairing session found for pair_id: ${pairId}`
+      });
+      return;
+    }
+
+    if (pair.sender_device_id !== device.device_id) {
+      res.status(403).json({
+        success: false,
+        error: 'FORBIDDEN',
+        message: 'Only the sender device that created this pair can toggle active status.'
+      });
+      return;
+    }
+
+    sessionService.setPairActive(pairId, is_active, device.device_id);
+
+    res.status(200).json({
+      success: true,
+      message: is_active ? 'Đã bật chuyển tiếp cho thiết bị này' : 'Đã tạm dừng chuyển tiếp cho thiết bị này',
+      pair_id: pairId,
+      is_active
     });
   }
 }

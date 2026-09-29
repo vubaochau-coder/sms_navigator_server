@@ -11,17 +11,39 @@ export interface DeviceEntity {
 export interface PairEntity {
   pair_id: string;
   sender_device_id: string; // Device A - the only device allowed to relay OTP payloads
-  receiver_device_id?: string; // Device B - bound after successful pairing code confirmation
-  pairing_code_hash?: string; // SHA-256 hex digest of the 6-digit code - plaintext code is never stored
+  sender_device_name?: string; // Device A name for Receiver UI display
+  receiver_device_id?: string; // Device B - bound after successful pairing confirmation
+  is_active: boolean; // Sender toggle: true = active relay, false = paused by sender
+  pairing_code_hash?: string; // SHA-256 hex digest of the 6-digit code
   pairing_code_expires_at?: number; // Unix timestamp in seconds (10 minutes TTL)
   pairing_attempts: number; // max 5 failed attempts before the code is invalidated
   fcm_token?: string; // receiver FCM token registered at confirm time
-  device_name?: string;
-  platform?: string;
+  device_name?: string; // receiver device name
+  platform?: string; // receiver platform
   created_at: number; // Unix timestamp in seconds
   paired_at?: number; // Unix timestamp in seconds
   expires_at?: number; // Unix timestamp in seconds
   last_active_at: number; // Unix timestamp in seconds
+}
+
+export interface PairedReceiverItem {
+  pair_id: string;
+  receiver_device_id: string;
+  device_name: string;
+  platform: string;
+  paired_at: number;
+  last_active_at: number;
+  is_active: boolean;
+}
+
+export interface PairedSenderItem {
+  pair_id: string;
+  sender_device_id: string;
+  device_name: string;
+  platform: string;
+  paired_at: number;
+  last_active_at: number;
+  is_active: boolean; // Read-only for receiver: indicates if sender has active relay or paused it
 }
 
 declare global {
@@ -91,6 +113,7 @@ export interface PairStatusResponse {
   pairing_code_expires_at?: number;
   pairing_code_expired?: boolean;
   pairing_attempts_remaining?: number;
+  is_active?: boolean;
 }
 
 export interface RelayPayloadRequest {
