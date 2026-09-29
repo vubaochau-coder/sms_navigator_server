@@ -65,8 +65,8 @@ export interface PairInitResponse {
 
 export interface PairConfirmRequest {
   pair_id: string;
-  pairing_code?: string; // optional: QR-based pairing skips the 6-digit code
-  fcm_token: string;
+  pairing_code?: string;
+  fcm_token?: string;
   device_name?: string;
   platform?: string;
 }

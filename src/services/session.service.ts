@@ -117,6 +117,14 @@ export class SessionService {
     return this.pairs.delete(pairId);
   }
 
+  public updateReceiverFcmToken(receiverDeviceId: string, fcmToken: string): void {
+    for (const pair of this.pairs.values()) {
+      if (pair.receiver_device_id === receiverDeviceId) {
+        pair.fcm_token = fcmToken;
+      }
+    }
+  }
+
   public isParticipant(pair: PairEntity, deviceId: string): boolean {
     return pair.sender_device_id === deviceId || pair.receiver_device_id === deviceId;
   }

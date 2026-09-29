@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { deviceService } from '../services/device.service.js';
+import { sessionService } from '../services/session.service.js';
 import { DeviceFcmTokenRequest, DeviceRegisterRequest } from '../types/index.js';
 
 export class DeviceController {
@@ -23,6 +24,7 @@ export class DeviceController {
     const { fcm_token } = req.body as DeviceFcmTokenRequest;
 
     const updated = deviceService.updateFcmToken(device.device_id, fcm_token);
+    sessionService.updateReceiverFcmToken(device.device_id, fcm_token);
 
     res.status(200).json({
       success: true,

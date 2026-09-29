@@ -122,7 +122,7 @@ export class PairController {
 
     const confirmed = sessionService.confirmPairing(pair_id, {
       receiver_device_id: device.device_id,
-      fcm_token,
+      fcm_token: fcm_token ?? device.fcm_token ?? '',
       device_name,
       platform
     });

@@ -16,8 +16,9 @@ export const pairConfirmSchema = z.object({
     .regex(/^\d{6}$/, 'pairing_code must be exactly 6 digits')
     .optional(),
   fcm_token: z
-    .string({ required_error: 'fcm_token is required' })
-    .min(10, 'fcm_token is invalid'),
+    .string()
+    .min(5, 'fcm_token is invalid')
+    .optional(),
   device_name: z.string().optional(),
   platform: z.enum(['android', 'ios', 'other']).optional()
 });
