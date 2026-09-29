@@ -65,10 +65,18 @@ export interface PairInitResponse {
 
 export interface PairConfirmRequest {
   pair_id: string;
-  pairing_code: string;
+  pairing_code?: string; // optional: QR-based pairing skips the 6-digit code
   fcm_token: string;
   device_name?: string;
   platform?: string;
+}
+
+export interface PendingRelayMessage {
+  message_id: string;
+  encrypted_payload: string;
+  iv: string;
+  sent_at: number;
+  ttl_seconds: number;
 }
 
 export interface PairStatusResponse {

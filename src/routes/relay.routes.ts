@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { RelayController } from '../controllers/relay.controller.js';
 import { authenticate } from '../middlewares/auth.middleware.js';
-import { validateBody } from '../middlewares/validate.middleware.js';
+import { validateBody, validateParams } from '../middlewares/validate.middleware.js';
 import { relayPayloadSchema } from '../schemas/relay.schema.js';
+import { pairIdParamSchema } from '../schemas/pair.schema.js';
 import { relayRateLimiter } from '../middlewares/rate-limit.middleware.js';
 
 const router = Router();
@@ -12,5 +13,11 @@ router.post('/', authenticate, relayRateLimiter, validateBody(relayPayloadSchema
 
 // Alias: POST /api/v1/relay/otp
 router.post('/otp', authenticate, relayRateLimiter, validateBody(relayPayloadSchema), RelayController.relayOtp);
+
+// Receiver polls encrypted payloads queued for this pair (auto-clears on fetch)
+router.get('/pending/:pairId', authenticate, validateParams(pairIdParamSchema), RelayController.getPendingMessages);
+
+// Alias: GET /api/v1/relay/otp/pending/:pairId
+router.get('/otp/pending/:pairId', authenticate, validateParams(pairIdParamSchema), RelayController.getPendingMessages);
 
 export const relayRoutes = router;

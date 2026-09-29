@@ -426,6 +426,63 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(reuse.status).toBe(409);
       expect(reuse.body.error).toBe('PAIR_ALREADY_CONFIRMED');
     });
+
+    it('should confirm pairing without a pairing_code (QR flow, 200)', async () => {
+      const a = await registerDevice('A_pair_qr_flow');
+      const b = await registerDevice('B_pair_qr_flow');
+
+      const init = await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.token))
+        .send({ pair_id: 'pair_qr_flow' });
+      expect(init.status).toBe(201);
+
+      const res = await request(server)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
+        .send({
+          pair_id: 'pair_qr_flow',
+          fcm_token: 'fcm_qr_receiver_12345',
+          device_name: 'QR Receiver',
+          platform: 'android'
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.pair_id).toBe('pair_qr_flow');
+      expect(res.body.paired_at).toBeLessThanOrEqual(nowSeconds());
+      expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
+
+      const pair = sessionService.getPair('pair_qr_flow');
+      expect(pair?.receiver_device_id).toBe('B_pair_qr_flow');
+      expect(pair?.fcm_token).toBe('fcm_qr_receiver_12345');
+      expect(pair?.pairing_code_hash).toBeUndefined();
+
+      const second = await request(server)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.token))
+        .send({ pair_id: 'pair_qr_flow', fcm_token: 'fcm_qr_receiver_12345' });
+      expect(second.status).toBe(409);
+      expect(second.body.error).toBe('PAIR_ALREADY_CONFIRMED');
+    });
+
+    it('should block Device A from QR-confirming its own pair (400)', async () => {
+      const a = await registerDevice('A_pair_qr_self');
+
+      await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.token))
+        .send({ pair_id: 'pair_qr_self' });
+
+      const res = await request(server)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(a.token))
+        .send({ pair_id: 'pair_qr_self', fcm_token: 'fcm_qr_self_12345' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('SELF_PAIRING_NOT_ALLOWED');
+      expect(sessionService.getPair('pair_qr_self')?.receiver_device_id).toBeUndefined();
+    });
   });
 
   describe('GET /api/v1/pair/status/:pairId (ownership enforced)', () => {
@@ -686,6 +743,130 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.message_id).toBe('msg_alias_1');
+    });
+  });
+
+  describe('GET /api/v1/relay/pending/:pairId (Pending Messages Queue)', () => {
+    const relayBody = (pairId: string, messageId: string) => ({
+      pair_id: pairId,
+      message_id: messageId,
+      encrypted_payload: `encrypted_${messageId}==`,
+      iv: 'aXZfc2FsdF8xMmJ5dGVz',
+      sent_at: nowSeconds(),
+      ttl_seconds: 300
+    });
+
+    it('should return 401 without auth', async () => {
+      const res = await request(server).get('/api/v1/relay/pending/pair_pending_noauth');
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('UNAUTHORIZED');
+    });
+
+    it('should return 404 when the pair does not exist', async () => {
+      const { token } = await registerDevice('device_pending_unknown');
+
+      const res = await request(server)
+        .get('/api/v1/relay/pending/pair_never_pending')
+        .set(bearer(token));
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('PAIR_NOT_FOUND');
+    });
+
+    it('should return 403 for Device C (not a participant)', async () => {
+      const { c, pairId } = await createPairedPair('pair_pending_forbidden');
+
+      const res = await request(server)
+        .get(`/api/v1/relay/pending/${pairId}`)
+        .set(bearer(c.token));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('FORBIDDEN');
+    });
+
+    it('should return relayed messages and auto-clear the queue after fetch', async () => {
+      const { a, b, pairId } = await createPairedPair('pair_pending_drain');
+
+      const relay1 = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_pending_001'));
+      const relay2 = await request(server)
+        .post('/api/v1/relay/otp')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_pending_002'));
+      expect(relay1.status).toBe(200);
+      expect(relay2.status).toBe(200);
+
+      const fetch1 = await request(server)
+        .get(`/api/v1/relay/pending/${pairId}`)
+        .set(bearer(b.token));
+      expect(fetch1.status).toBe(200);
+      expect(fetch1.body.success).toBe(true);
+      expect(fetch1.body.count).toBe(2);
+      expect(fetch1.body.messages).toHaveLength(2);
+      expect(fetch1.body.messages.map((m: any) => m.message_id).sort()).toEqual([
+        'msg_pending_001',
+        'msg_pending_002'
+      ]);
+      for (const message of fetch1.body.messages) {
+        expect(message.encrypted_payload).toBe(`encrypted_${message.message_id}==`);
+        expect(message.iv).toBe('aXZfc2FsdF8xMmJ5dGVz');
+        expect(message.sent_at).toBeLessThanOrEqual(nowSeconds());
+        expect(message.ttl_seconds).toBe(300);
+      }
+
+      // Queue is drained: the second fetch must be empty
+      const fetch2 = await request(server)
+        .get(`/api/v1/relay/pending/${pairId}`)
+        .set(bearer(b.token));
+      expect(fetch2.status).toBe(200);
+      expect(fetch2.body.count).toBe(0);
+      expect(fetch2.body.messages).toEqual([]);
+
+      // New relayed messages land in the queue again
+      await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_pending_003'));
+
+      const fetch3 = await request(server)
+        .get(`/api/v1/relay/pending/${pairId}`)
+        .set(bearer(b.token));
+      expect(fetch3.status).toBe(200);
+      expect(fetch3.body.count).toBe(1);
+      expect(fetch3.body.messages[0].message_id).toBe('msg_pending_003');
+    });
+
+    it('should let Device A (sender) fetch its own queued messages too', async () => {
+      const { a, pairId } = await createPairedPair('pair_pending_sender_fetch');
+
+      await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_sender_fetch_1'));
+
+      const res = await request(server)
+        .get(`/api/v1/relay/pending/${pairId}`)
+        .set(bearer(a.token));
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+    });
+
+    it('should also work on alias endpoint /api/v1/relay/otp/pending/:pairId', async () => {
+      const { a, b, pairId } = await createPairedPair('pair_pending_alias');
+
+      await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send(relayBody(pairId, 'msg_alias_pending_1'));
+
+      const res = await request(server)
+        .get(`/api/v1/relay/otp/pending/${pairId}`)
+        .set(bearer(b.token));
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+      expect(res.body.messages[0].message_id).toBe('msg_alias_pending_1');
     });
   });
 

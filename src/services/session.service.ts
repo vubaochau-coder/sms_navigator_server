@@ -1,9 +1,10 @@
-import { PairEntity } from '../types/index.js';
+import { PairEntity, PendingRelayMessage } from '../types/index.js';
 import { env } from '../config/env.js';
 
 export const PAIRING_CODE_TTL_SECONDS = 600; // 10 minutes
 export const MAX_PAIRING_ATTEMPTS = 5; // 5 wrong guesses invalidate the code
 export const MESSAGE_DEDUP_TTL_SECONDS = 600; // 10 minutes
+export const PENDING_MESSAGE_TTL_SECONDS = 300; // 5 minutes
 const STALE_PENDING_PAIR_SECONDS = 3600;
 
 export interface PairConfirmParams {
@@ -15,6 +16,7 @@ export interface PairConfirmParams {
 
 export class SessionService {
   private pairs = new Map<string, PairEntity>();
+  private pendingMessages: Map<string, PendingRelayMessage[]> = new Map();
   private processedMessageIds = new Set<string>();
   private messageProcessedAt = new Map<string, number>();
   private cleanupInterval: NodeJS.Timeout | null = null;
@@ -111,6 +113,7 @@ export class SessionService {
   }
 
   public removePair(pairId: string): boolean {
+    this.pendingMessages.delete(pairId);
     return this.pairs.delete(pairId);
   }
 
@@ -138,6 +141,28 @@ export class SessionService {
     this.messageProcessedAt.set(messageId, now);
   }
 
+  public addPendingMessage(pairId: string, message: PendingRelayMessage): void {
+    const queue = this.pendingMessages.get(pairId) ?? [];
+    queue.push(message);
+    this.pendingMessages.set(pairId, this.pruneExpiredPendingMessages(queue));
+  }
+
+  public getAndClearPendingMessages(pairId: string): PendingRelayMessage[] {
+    const queue = this.pendingMessages.get(pairId);
+    if (!queue) return [];
+
+    const alive = this.pruneExpiredPendingMessages(queue);
+    this.pendingMessages.delete(pairId);
+    return alive;
+  }
+
+  private pruneExpiredPendingMessages(queue: PendingRelayMessage[]): PendingRelayMessage[] {
+    const now = Math.floor(Date.now() / 1000);
+    return queue.filter(
+      (message) => now - message.sent_at <= PENDING_MESSAGE_TTL_SECONDS
+    );
+  }
+
   public cleanExpiredSessions(): number {
     const now = Math.floor(Date.now() / 1000);
     let removedCount = 0;
@@ -161,6 +186,15 @@ export class SessionService {
       }
     }
 
+    for (const [pairId, queue] of this.pendingMessages.entries()) {
+      const alive = this.pruneExpiredPendingMessages(queue);
+      if (alive.length === 0) {
+        this.pendingMessages.delete(pairId);
+      } else {
+        this.pendingMessages.set(pairId, alive);
+      }
+    }
+
     return removedCount;
   }
 
@@ -170,6 +204,7 @@ export class SessionService {
 
   public clearAll(): void {
     this.pairs.clear();
+    this.pendingMessages.clear();
     this.processedMessageIds.clear();
     this.messageProcessedAt.clear();
   }

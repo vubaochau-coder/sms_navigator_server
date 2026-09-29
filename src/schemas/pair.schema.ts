@@ -9,9 +9,12 @@ export const pairConfirmSchema = z.object({
     .string({ required_error: 'pair_id is required' })
     .min(3, 'pair_id must be at least 3 characters')
     .max(128, 'pair_id too long'),
+  // Optional: QR-based pairing confirms without the 6-digit code.
+  // When provided (legacy flow), it must still be exactly 6 digits.
   pairing_code: z
-    .string({ required_error: 'pairing_code is required' })
-    .regex(/^\d{6}$/, 'pairing_code must be exactly 6 digits'),
+    .string()
+    .regex(/^\d{6}$/, 'pairing_code must be exactly 6 digits')
+    .optional(),
   fcm_token: z
     .string({ required_error: 'fcm_token is required' })
     .min(10, 'fcm_token is invalid'),

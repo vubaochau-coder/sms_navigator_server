@@ -86,34 +86,38 @@ export class PairController {
       return;
     }
 
-    if (!pair.pairing_code_hash) {
-      res.status(400).json({
-        success: false,
-        error: 'NO_PENDING_PAIRING',
-        message: 'No pending pairing code for this pair (never generated or already used).'
-      });
-      return;
-    }
+    // QR-based pairing: no 6-digit code required, the scanned pair payload
+    // (pair_id + authenticated sender identity) is sufficient to confirm.
+    if (pairing_code !== undefined) {
+      if (!pair.pairing_code_hash) {
+        res.status(400).json({
+          success: false,
+          error: 'NO_PENDING_PAIRING',
+          message: 'No pending pairing code for this pair (never generated or already used).'
+        });
+        return;
+      }
 
-    const now = Math.floor(Date.now() / 1000);
-    if (pair.pairing_code_expires_at === undefined || pair.pairing_code_expires_at <= now) {
-      res.status(400).json({
-        success: false,
-        error: 'PAIRING_CODE_EXPIRED',
-        message: 'The pairing code has expired. Device A must call /pair/init again.'
-      });
-      return;
-    }
+      const now = Math.floor(Date.now() / 1000);
+      if (pair.pairing_code_expires_at === undefined || pair.pairing_code_expires_at <= now) {
+        res.status(400).json({
+          success: false,
+          error: 'PAIRING_CODE_EXPIRED',
+          message: 'The pairing code has expired. Device A must call /pair/init again.'
+        });
+        return;
+      }
 
-    if (sha256Hex(pairing_code) !== pair.pairing_code_hash) {
-      const attempts = sessionService.recordFailedAttempt(pair_id);
-      const remaining = Math.max(0, MAX_PAIRING_ATTEMPTS - attempts);
-      res.status(400).json({
-        success: false,
-        error: 'INVALID_PAIRING_CODE',
-        message: `Incorrect pairing code. ${remaining} attempts remaining.`
-      });
-      return;
+      if (sha256Hex(pairing_code) !== pair.pairing_code_hash) {
+        const attempts = sessionService.recordFailedAttempt(pair_id);
+        const remaining = Math.max(0, MAX_PAIRING_ATTEMPTS - attempts);
+        res.status(400).json({
+          success: false,
+          error: 'INVALID_PAIRING_CODE',
+          message: `Incorrect pairing code. ${remaining} attempts remaining.`
+        });
+        return;
+      }
     }
 
     const confirmed = sessionService.confirmPairing(pair_id, {
