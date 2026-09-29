@@ -6,12 +6,26 @@ import { deviceService, sha256Hex } from '../src/services/device.service.js';
 import { fcmService } from '../src/services/fcm.service.js';
 
 describe('SMS Navigator Server Integration Tests', () => {
-  const app = createApp();
+  const expressApp = createApp();
+  let server: any;
+
+  beforeAll((done) => {
+    server = expressApp.listen(0, done);
+  });
+
+  afterAll((done) => {
+    sessionService.destroy();
+    if (server) {
+      server.close(done);
+    } else {
+      done();
+    }
+  });
 
   const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
   const registerDevice = async (deviceId?: string): Promise<{ deviceId: string; token: string }> => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/v1/devices/register')
       .send(deviceId ? { device_id: deviceId } : {});
     return { deviceId: res.body.device_id, token: res.body.token };
@@ -24,7 +38,7 @@ describe('SMS Navigator Server Integration Tests', () => {
   const createPendingPair = async (pairId: string, senderId?: string, receiverId?: string) => {
     const a = await registerDevice(senderId ?? `A_${pairId}`);
     const b = await registerDevice(receiverId ?? `B_${pairId}`);
-    const init = await request(app)
+    const init = await request(server)
       .post('/api/v1/pair/init')
       .set(bearer(a.token))
       .send({ pair_id: pairId });
@@ -35,11 +49,11 @@ describe('SMS Navigator Server Integration Tests', () => {
     const a = await registerDevice(`A_${pairId}`);
     const b = await registerDevice(`B_${pairId}`);
     const c = await registerDevice(`C_${pairId}`);
-    const init = await request(app)
+    const init = await request(server)
       .post('/api/v1/pair/init')
       .set(bearer(a.token))
       .send({ pair_id: pairId });
-    await request(app)
+    await request(server)
       .post('/api/v1/pair/confirm')
       .set(bearer(b.token))
       .send({
@@ -58,20 +72,16 @@ describe('SMS Navigator Server Integration Tests', () => {
     jest.restoreAllMocks();
   });
 
-  afterAll(() => {
-    sessionService.destroy();
-  });
-
   describe('GET /health & /api/v1/health', () => {
     it('should return healthy status at root /health', async () => {
-      const res = await request(app).get('/health');
+      const res = await request(server).get('/health');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('healthy');
       expect(res.body.uptime).toBeDefined();
     });
 
     it('should return healthy status at /api/v1/health', async () => {
-      const res = await request(app).get('/api/v1/health');
+      const res = await request(server).get('/api/v1/health');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('healthy');
     });
@@ -79,7 +89,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   describe('POST /api/v1/devices/register', () => {
     it('should register a device and return a raw CSPRNG token (201)', async () => {
-      const res = await request(app).post('/api/v1/devices/register').send({
+      const res = await request(server).post('/api/v1/devices/register').send({
         device_id: 'device_A_register',
         device_name: 'Pixel 8 (Vietnam)',
         platform: 'android'
@@ -94,8 +104,8 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
 
     it('should auto-generate a unique device_id when not provided', async () => {
-      const first = await request(app).post('/api/v1/devices/register').send({});
-      const second = await request(app).post('/api/v1/devices/register').send({});
+      const first = await request(server).post('/api/v1/devices/register').send({});
+      const second = await request(server).post('/api/v1/devices/register').send({});
 
       expect(first.status).toBe(201);
       expect(second.status).toBe(201);
@@ -118,13 +128,13 @@ describe('SMS Navigator Server Integration Tests', () => {
       const second = await registerDevice('device_re_register');
       expect(first.token).not.toBe(second.token);
 
-      const oldTokenRes = await request(app)
+      const oldTokenRes = await request(server)
         .put('/api/v1/devices/fcm-token')
         .set(bearer(first.token))
         .send({ fcm_token: 'fcm_attempt_with_old_token_12345' });
       expect(oldTokenRes.status).toBe(401);
 
-      const newTokenRes = await request(app)
+      const newTokenRes = await request(server)
         .put('/api/v1/devices/fcm-token')
         .set(bearer(second.token))
         .send({ fcm_token: 'fcm_attempt_with_new_token_12345' });
@@ -132,7 +142,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
 
     it('should reject invalid payload with 400', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/devices/register')
         .send({ device_id: 'ab', platform: 'unknown_platform' });
 
@@ -144,7 +154,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   describe('PUT /api/v1/devices/fcm-token', () => {
     it('should return 401 when Authorization header is missing', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/v1/devices/fcm-token')
         .send({ fcm_token: 'fcm_token_without_auth_12345' });
 
@@ -153,7 +163,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
 
     it('should return 401 for an unknown token', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/v1/devices/fcm-token')
         .set(bearer('totally_unknown_token_value_12345'))
         .send({ fcm_token: 'fcm_token_with_bad_auth_12345' });
@@ -163,7 +173,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
 
     it('should return 401 for malformed Authorization header (not Bearer)', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/v1/devices/fcm-token')
         .set('Authorization', 'Basic dXNlcjpwYXNz')
         .send({ fcm_token: 'fcm_token_basic_auth_12345' });
@@ -174,11 +184,11 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 400 when fcm_token is missing or too short', async () => {
       const { token } = await registerDevice('device_fcm_invalid');
 
-      const missing = await request(app).put('/api/v1/devices/fcm-token').set(bearer(token)).send({});
+      const missing = await request(server).put('/api/v1/devices/fcm-token').set(bearer(token)).send({});
       expect(missing.status).toBe(400);
       expect(missing.body.error).toBe('VALIDATION_ERROR');
 
-      const tooShort = await request(app)
+      const tooShort = await request(server)
         .put('/api/v1/devices/fcm-token')
         .set(bearer(token))
         .send({ fcm_token: 'short' });
@@ -188,7 +198,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should update the FCM token of the authenticated device', async () => {
       const { token, deviceId } = await registerDevice('device_fcm_update');
 
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/v1/devices/fcm-token')
         .set(bearer(token))
         .send({ fcm_token: 'fcm_updated_token_value_12345' });
@@ -202,7 +212,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   describe('POST /api/v1/pair/init (Device A)', () => {
     it('should return 401 without auth', async () => {
-      const res = await request(app).post('/api/v1/pair/init').send({ pair_id: 'pair_no_auth' });
+      const res = await request(server).post('/api/v1/pair/init').send({ pair_id: 'pair_no_auth' });
       expect(res.status).toBe(401);
       expect(res.body.error).toBe('UNAUTHORIZED');
     });
@@ -210,7 +220,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should create a pair and return pair_id with a 6-digit code (201)', async () => {
       const { token } = await registerDevice('device_A_init');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(token))
         .send({ pair_id: 'pair_init_001' });
@@ -230,7 +240,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should auto-generate pair_id when omitted', async () => {
       const { token } = await registerDevice('device_A_init_auto');
 
-      const res = await request(app).post('/api/v1/pair/init').set(bearer(token)).send({});
+      const res = await request(server).post('/api/v1/pair/init').set(bearer(token)).send({});
 
       expect(res.status).toBe(201);
       expect(res.body.pair_id).toBeDefined();
@@ -241,11 +251,11 @@ describe('SMS Navigator Server Integration Tests', () => {
       const a = await registerDevice('device_A_reinit');
       const b = await registerDevice('device_B_reinit');
 
-      const first = await request(app)
+      const first = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(a.token))
         .send({ pair_id: 'pair_reinit' });
-      const second = await request(app)
+      const second = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(a.token))
         .send({ pair_id: 'pair_reinit' });
@@ -254,7 +264,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(second.status).toBe(201);
       expect(second.body.pairing_code).not.toBe(first.body.pairing_code);
 
-      const confirm = await request(app)
+      const confirm = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
         .send({ pair_id: 'pair_reinit', pairing_code: second.body.pairing_code, fcm_token: 'fcm_reinit_receiver_12345' });
@@ -265,9 +275,9 @@ describe('SMS Navigator Server Integration Tests', () => {
       const a = await registerDevice('device_A_owner');
       const c = await registerDevice('device_C_intruder');
 
-      await request(app).post('/api/v1/pair/init').set(bearer(a.token)).send({ pair_id: 'pair_hijack' });
+      await request(server).post('/api/v1/pair/init').set(bearer(a.token)).send({ pair_id: 'pair_hijack' });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(c.token))
         .send({ pair_id: 'pair_hijack' });
@@ -279,7 +289,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 409 when the pair has already been confirmed', async () => {
       const { a, pairId } = await createPairedPair('pair_conflicted');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(a.token))
         .send({ pair_id: pairId });
@@ -291,7 +301,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   describe('POST /api/v1/pair/confirm (Device B)', () => {
     it('should return 401 without auth', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/confirm')
         .send({ pair_id: 'pair_confirm_noauth', pairing_code: '123456', fcm_token: 'fcm_token_123456' });
       expect(res.status).toBe(401);
@@ -300,7 +310,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should reject invalid payload with 400', async () => {
       const { token } = await registerDevice('device_B_invalid_payload');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(token))
         .send({ pair_id: 'ab', pairing_code: 'abcdef' });
@@ -312,7 +322,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 404 for an unknown pair_id', async () => {
       const { token } = await registerDevice('device_B_unknown_pair');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(token))
         .send({ pair_id: 'pair_missing', pairing_code: '123456', fcm_token: 'fcm_token_123456' });
@@ -324,7 +334,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should block Device A from confirming its own pair (400)', async () => {
       const { a, code } = await createPendingPair('pair_self_block');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(a.token))
         .send({ pair_id: 'pair_self_block', pairing_code: code, fcm_token: 'fcm_self_pair_12345' });
@@ -337,7 +347,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should reject an incorrect code with 400 and count the failed attempt', async () => {
       const { b } = await createPendingPair('pair_wrong_code');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
         .send({ pair_id: 'pair_wrong_code', pairing_code: '000000', fcm_token: 'fcm_wrong_code_12345' });
@@ -352,14 +362,14 @@ describe('SMS Navigator Server Integration Tests', () => {
       const { b, code } = await createPendingPair('pair_locked');
 
       for (let i = 0; i < 5; i++) {
-        const res = await request(app)
+        const res = await request(server)
           .post('/api/v1/pair/confirm')
           .set(bearer(b.token))
           .send({ pair_id: 'pair_locked', pairing_code: '000000', fcm_token: 'fcm_locked_12345' });
         expect(res.status).toBe(400);
       }
 
-      const locked = await request(app)
+      const locked = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
         .send({ pair_id: 'pair_locked', pairing_code: code, fcm_token: 'fcm_locked_12345' });
@@ -374,7 +384,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       const pair = sessionService.getPair('pair_expired_code')!;
       pair.pairing_code_expires_at = nowSeconds() - 10;
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
         .send({ pair_id: 'pair_expired_code', pairing_code: code, fcm_token: 'fcm_expired_12345' });
@@ -386,7 +396,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should bind Device B with the correct code and clear the code (one-time use)', async () => {
       const { b, code } = await createPendingPair('pair_confirm_ok');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
         .send({
@@ -409,7 +419,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(pair?.pairing_code_hash).toBeUndefined();
       expect(JSON.stringify(pair)).not.toContain(code);
 
-      const reuse = await request(app)
+      const reuse = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
         .send({ pair_id: 'pair_confirm_ok', pairing_code: code, fcm_token: 'fcm_receiver_confirmed_12345' });
@@ -420,14 +430,14 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   describe('GET /api/v1/pair/status/:pairId (ownership enforced)', () => {
     it('should return 401 without auth', async () => {
-      const res = await request(app).get('/api/v1/pair/status/pair_status_noauth');
+      const res = await request(server).get('/api/v1/pair/status/pair_status_noauth');
       expect(res.status).toBe(401);
     });
 
     it('should return 404 when the pair does not exist', async () => {
       const { token } = await registerDevice('device_status_unknown');
 
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/v1/pair/status/pair_unknown_404')
         .set(bearer(token));
 
@@ -438,7 +448,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should let Device A (sender) view pending pair status', async () => {
       const { a } = await createPendingPair('pair_status_pending');
 
-      const res = await request(app).get('/api/v1/pair/status/pair_status_pending').set(bearer(a.token));
+      const res = await request(server).get('/api/v1/pair/status/pair_status_pending').set(bearer(a.token));
 
       expect(res.status).toBe(200);
       expect(res.body.pair_id).toBe('pair_status_pending');
@@ -450,7 +460,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should let Device B (receiver) view paired status', async () => {
       const { b } = await createPairedPair('pair_status_paired');
 
-      const res = await request(app).get('/api/v1/pair/status/pair_status_paired').set(bearer(b.token));
+      const res = await request(server).get('/api/v1/pair/status/pair_status_paired').set(bearer(b.token));
 
       expect(res.status).toBe(200);
       expect(res.body.is_paired).toBe(true);
@@ -462,7 +472,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 403 Forbidden for Device C (not a participant)', async () => {
       const { c } = await createPairedPair('pair_status_forbidden');
 
-      const res = await request(app).get('/api/v1/pair/status/pair_status_forbidden').set(bearer(c.token));
+      const res = await request(server).get('/api/v1/pair/status/pair_status_forbidden').set(bearer(c.token));
 
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('FORBIDDEN');
@@ -471,14 +481,14 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   describe('DELETE /api/v1/pair/:pairId (ownership enforced)', () => {
     it('should return 401 without auth', async () => {
-      const res = await request(app).delete('/api/v1/pair/pair_revoke_noauth');
+      const res = await request(server).delete('/api/v1/pair/pair_revoke_noauth');
       expect(res.status).toBe(401);
     });
 
     it('should return 404 when the pair does not exist', async () => {
       const { token } = await registerDevice('device_revoke_unknown');
 
-      const res = await request(app).delete('/api/v1/pair/pair_unknown_revoke').set(bearer(token));
+      const res = await request(server).delete('/api/v1/pair/pair_unknown_revoke').set(bearer(token));
 
       expect(res.status).toBe(404);
       expect(res.body.error).toBe('PAIR_NOT_FOUND');
@@ -487,7 +497,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 403 Forbidden for Device C (not a participant)', async () => {
       const { c } = await createPairedPair('pair_revoke_forbidden');
 
-      const res = await request(app).delete('/api/v1/pair/pair_revoke_forbidden').set(bearer(c.token));
+      const res = await request(server).delete('/api/v1/pair/pair_revoke_forbidden').set(bearer(c.token));
 
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('FORBIDDEN');
@@ -497,11 +507,11 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should let Device A revoke the pair', async () => {
       const { a } = await createPairedPair('pair_revoke_by_a');
 
-      const res = await request(app).delete('/api/v1/pair/pair_revoke_by_a').set(bearer(a.token));
+      const res = await request(server).delete('/api/v1/pair/pair_revoke_by_a').set(bearer(a.token));
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
 
-      const check = await request(app)
+      const check = await request(server)
         .get('/api/v1/pair/status/pair_revoke_by_a')
         .set(bearer(a.token));
       expect(check.status).toBe(404);
@@ -510,7 +520,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should let Device B revoke the pair', async () => {
       const { b } = await createPairedPair('pair_revoke_by_b');
 
-      const res = await request(app).delete('/api/v1/pair/pair_revoke_by_b').set(bearer(b.token));
+      const res = await request(server).delete('/api/v1/pair/pair_revoke_by_b').set(bearer(b.token));
       expect(res.status).toBe(200);
       expect(sessionService.getPair('pair_revoke_by_b')).toBeNull();
     });
@@ -527,7 +537,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
 
     it('should return 401 without auth', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .send(relayBody('pair_relay_noauth', 'msg_noauth_1'));
 
@@ -538,7 +548,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 404 when the pair does not exist', async () => {
       const { a } = await createPairedPair('pair_relay_suite');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody('pair_never_created', 'msg_missing_pair_1'));
@@ -550,7 +560,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 404 when the receiver has not confirmed the pair yet', async () => {
       const { a } = await createPendingPair('pair_relay_pending');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody('pair_relay_pending', 'msg_pending_pair_1'));
@@ -562,7 +572,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 400 PAYLOAD_EXPIRED when sent_at is too old', async () => {
       const { a, pairId } = await createPairedPair('pair_relay_expired');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send({ ...relayBody(pairId, 'msg_expired_1'), sent_at: nowSeconds() - 500 });
@@ -574,7 +584,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 403 when Device B (receiver) tries to relay', async () => {
       const { b, pairId } = await createPairedPair('pair_relay_by_receiver');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .set(bearer(b.token))
         .send(relayBody(pairId, 'msg_from_receiver_1'));
@@ -586,7 +596,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 403 when Device C (foreign device) tries to relay', async () => {
       const { c, pairId } = await createPairedPair('pair_relay_by_c');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .set(bearer(c.token))
         .send(relayBody(pairId, 'msg_from_c_1'));
@@ -598,7 +608,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should relay the OTP payload when sent by Device A (sender)', async () => {
       const { a, pairId } = await createPairedPair('pair_relay_by_sender');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_from_sender_1'));
@@ -616,14 +626,14 @@ describe('SMS Navigator Server Integration Tests', () => {
         .spyOn(fcmService, 'sendRelayDataMessage')
         .mockResolvedValue('projects/mock/messages/dedup_1');
 
-      const first = await request(app)
+      const first = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_dup_001'));
       expect(first.status).toBe(200);
       expect(first.body.duplicate).toBeUndefined();
 
-      const duplicate = await request(app)
+      const duplicate = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_dup_001'));
@@ -632,7 +642,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(duplicate.body.duplicate).toBe(true);
       expect(spy).toHaveBeenCalledTimes(1);
 
-      const differentMessage = await request(app)
+      const differentMessage = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_dup_002'));
@@ -647,7 +657,7 @@ describe('SMS Navigator Server Integration Tests', () => {
         .spyOn(fcmService, 'sendRelayDataMessage')
         .mockResolvedValue('projects/mock/messages/blind_1');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_blind_1'));
@@ -668,7 +678,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should also work on alias endpoint /api/v1/relay/otp', async () => {
       const { a, pairId } = await createPairedPair('pair_relay_alias');
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/v1/relay/otp')
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_alias_1'));
@@ -681,10 +691,10 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   describe('End-to-end pairing & relay flow', () => {
     it('should complete register → init → confirm → status → relay → dedup → revoke', async () => {
-      const regA = await request(app)
+      const regA = await request(server)
         .post('/api/v1/devices/register')
         .send({ device_id: 'e2e_device_A', device_name: 'Sender', platform: 'android' });
-      const regB = await request(app)
+      const regB = await request(server)
         .post('/api/v1/devices/register')
         .send({ device_id: 'e2e_device_B', device_name: 'Receiver', platform: 'android' });
       expect(regA.status).toBe(201);
@@ -693,18 +703,18 @@ describe('SMS Navigator Server Integration Tests', () => {
       const tokenA = regA.body.token as string;
       const tokenB = regB.body.token as string;
 
-      const init = await request(app).post('/api/v1/pair/init').set(bearer(tokenA)).send({});
+      const init = await request(server).post('/api/v1/pair/init').set(bearer(tokenA)).send({});
       expect(init.status).toBe(201);
       const pairId = init.body.pair_id as string;
       const code = init.body.pairing_code as string;
 
-      const statusBefore = await request(app)
+      const statusBefore = await request(server)
         .get(`/api/v1/pair/status/${pairId}`)
         .set(bearer(tokenA));
       expect(statusBefore.status).toBe(200);
       expect(statusBefore.body.is_paired).toBe(false);
 
-      const confirm = await request(app)
+      const confirm = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(tokenB))
         .send({
@@ -716,14 +726,14 @@ describe('SMS Navigator Server Integration Tests', () => {
         });
       expect(confirm.status).toBe(200);
 
-      const statusAfter = await request(app)
+      const statusAfter = await request(server)
         .get(`/api/v1/pair/status/${pairId}`)
         .set(bearer(tokenB));
       expect(statusAfter.status).toBe(200);
       expect(statusAfter.body.is_paired).toBe(true);
       expect(statusAfter.body.receiver_device_id).toBe('e2e_device_B');
 
-      const relay = await request(app)
+      const relay = await request(server)
         .post('/api/v1/relay')
         .set(bearer(tokenA))
         .send({
@@ -737,7 +747,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(relay.body.success).toBe(true);
       expect(relay.body.message_id).toBe('e2e_msg_001');
 
-      const relayDuplicate = await request(app)
+      const relayDuplicate = await request(server)
         .post('/api/v1/relay')
         .set(bearer(tokenA))
         .send({
@@ -750,7 +760,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(relayDuplicate.status).toBe(200);
       expect(relayDuplicate.body.duplicate).toBe(true);
 
-      const relayByReceiver = await request(app)
+      const relayByReceiver = await request(server)
         .post('/api/v1/relay')
         .set(bearer(tokenB))
         .send({
@@ -762,10 +772,10 @@ describe('SMS Navigator Server Integration Tests', () => {
         });
       expect(relayByReceiver.status).toBe(403);
 
-      const revoke = await request(app).delete(`/api/v1/pair/${pairId}`).set(bearer(tokenA));
+      const revoke = await request(server).delete(`/api/v1/pair/${pairId}`).set(bearer(tokenA));
       expect(revoke.status).toBe(200);
 
-      const statusRevoked = await request(app)
+      const statusRevoked = await request(server)
         .get(`/api/v1/pair/status/${pairId}`)
         .set(bearer(tokenA));
       expect(statusRevoked.status).toBe(404);
