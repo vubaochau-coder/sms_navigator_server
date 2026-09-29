@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.env
+tests
+*.log
+.DS_Store
+service-account*.json
+coverage
