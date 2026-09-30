@@ -8,6 +8,20 @@ import { errorHandler } from './middlewares/error.middleware.js';
 export function createApp(): express.Application {
   const app = express();
 
+  // Trust reverse proxy headers from Render/Cloudflare for rate limiter and client IP
+  app.set('trust proxy', 1);
+
+  // Simple HTTP request logger
+  app.use((req: Request, res: Response, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const duration = Date.now() - start;
+      // eslint-disable-next-line no-console
+      console.log(`[HTTP] ${req.method} ${req.originalUrl} ${res.statusCode} - ${duration}ms`);
+    });
+    next();
+  });
+
   // Basic security and parsing
   app.use(helmet());
   app.use(
