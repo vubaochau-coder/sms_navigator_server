@@ -44,28 +44,8 @@ export interface MessageEntity {
   date: string; // YYYY-MM-DD (relayed_at date, used for history queries)
   status: MessageStatus; // PENDING = waiting in polling queue, SUCCESS = fetched/pushed
   expire_at?: number; // Unix timestamp in seconds (sent_at + ttl)
-  sender_device_name?: string; // for RelayHistoryResponse contract
+  sender_device_name?: string; // for RelayHistoryRecord contract
   ttl_seconds?: number; // original payload TTL from the sender
-}
-
-export interface PairedReceiverItem {
-  pair_id: string;
-  receiver_device_id: string;
-  device_name: string;
-  platform: string;
-  paired_at: number;
-  last_active_at: number;
-  is_active: boolean;
-}
-
-export interface PairedSenderItem {
-  pair_id: string;
-  sender_device_id: string;
-  device_name: string;
-  platform: string;
-  paired_at: number;
-  last_active_at: number;
-  is_active: boolean; // Read-only for receiver: indicates if sender has active relay or paused it
 }
 
 declare global {
@@ -82,29 +62,8 @@ export interface DeviceRegisterRequest {
   platform?: string;
 }
 
-export interface DeviceRegisterResponse {
-  success: boolean;
-  message: string;
-  device_id: string;
-  token: string;
-  token_type: 'Bearer';
-  created_at: number;
-}
-
 export interface DeviceFcmTokenRequest {
   fcm_token: string;
-}
-
-export interface PairInitRequest {
-  pair_id?: string;
-}
-
-export interface PairInitResponse {
-  success: boolean;
-  message: string;
-  pair_id: string;
-  pairing_code: string;
-  expires_at: number;
 }
 
 export interface PairConfirmRequest {
@@ -141,11 +100,10 @@ export interface PairStatusResponse {
 export interface RelayPayloadRequest {
   pair_id: string;
   message_id?: string;
-  device_id?: string;
   encrypted_payload: string;
   iv: string;
   sent_at: number; // Unix timestamp in seconds
-  ttl_seconds?: number;
+  ttl_seconds: number; // injected by relayPayloadSchema default when omitted
 }
 
 export interface RelayPayloadResponse {
@@ -167,12 +125,5 @@ export interface RelayHistoryRecord {
   relayed_at: number; // Unix timestamp in seconds
   status: 'SUCCESS' | 'QUEUED' | 'FAILED';
   message_id?: string;
-}
-
-export interface RelayHistoryResponse {
-  success: boolean;
-  date: string;
-  count: number;
-  records: RelayHistoryRecord[];
 }
 

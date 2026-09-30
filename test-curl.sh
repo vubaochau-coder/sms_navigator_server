@@ -10,8 +10,8 @@ echo "=========================================="
 echo "Testing SMS Navigator Server: $BASE_URL"
 echo "=========================================="
 
-echo -e "\n1. Testing Health Check (GET /health)..."
-curl -s -X GET "$BASE_URL/health" | jq . || curl -s -X GET "$BASE_URL/health"
+echo -e "\n1. Testing Health Check (GET /api/v1/health)..."
+curl -s -X GET "$BASE_URL/api/v1/health" | jq . || curl -s -X GET "$BASE_URL/api/v1/health"
 
 echo -e "\n\n2. Testing Pair Confirm from Device B (POST /api/v1/pair/confirm)..."
 curl -s -X POST "$BASE_URL/api/v1/pair/confirm" \
@@ -32,7 +32,6 @@ curl -s -X POST "$BASE_URL/api/v1/relay" \
   -H "Content-Type: application/json" \
   -d '{
     "pair_id": "'"$PAIR_ID"'",
-    "device_id": "sender_device_vietnam_001",
     "encrypted_payload": "f8a7b9c0d1e2f3a4_encrypted_aes_gcm_sample",
     "iv": "dGVzdF9pdl8xMmJ5dGVz",
     "sent_at": '"$NOW"',

@@ -347,16 +347,6 @@ export class SessionService {
     return true;
   }
 
-  public async markMessageProcessed(messageId: string): Promise<void> {
-    const db = getFirestoreDb();
-    if (!db) return;
-
-    await db
-      .collection(MESSAGES_COLLECTION)
-      .doc(messageId)
-      .set({ message_id: messageId, relayed_at: nowSeconds() }, { merge: true });
-  }
-
   public async addPendingMessage(pairId: string, message: PendingRelayMessage): Promise<void> {
     const db = getFirestoreDb();
     if (!db) return;
@@ -450,7 +440,7 @@ export class SessionService {
     return removedCount;
   }
 
-  public async addRelayHistory(record: RelayHistoryRecord): Promise<void> {
+  public async addRelayHistory(record: Omit<RelayHistoryRecord, 'status'>): Promise<void> {
     const db = getFirestoreDb();
     if (!db) return;
 
@@ -468,7 +458,7 @@ export class SessionService {
       relayed_at: record.relayed_at,
       date: toDateString(record.relayed_at),
       // PENDING = waiting in the polling queue; flipped to SUCCESS when fetched
-      status: (record.status === 'FAILED' ? 'FAILED' : 'PENDING') as MessageStatus
+      status: 'PENDING' as MessageStatus
     };
 
     if (pair?.receiver_device_id) {

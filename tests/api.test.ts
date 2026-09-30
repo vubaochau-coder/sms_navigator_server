@@ -72,15 +72,8 @@ describe('SMS Navigator Server Integration Tests', () => {
     jest.restoreAllMocks();
   });
 
-  describe('GET /health & /api/v1/health', () => {
-    it('should return healthy status at root /health', async () => {
-      const res = await request(server).get('/health');
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('healthy');
-      expect(res.body.uptime).toBeDefined();
-    });
-
-    it('should return healthy status at /api/v1/health', async () => {
+  describe('GET /api/v1/health', () => {
+    it('should return healthy status', async () => {
       const res = await request(server).get('/api/v1/health');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('healthy');
@@ -584,7 +577,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
   });
 
-  describe('POST /api/v1/relay & /api/v1/relay/otp (Blind Relay)', () => {
+  describe('POST /api/v1/relay (Blind Relay)', () => {
     const relayBody = (pairId: string, messageId?: string) => ({
       pair_id: pairId,
       ...(messageId ? { message_id: messageId } : {}),
@@ -732,19 +725,6 @@ describe('SMS Navigator Server Integration Tests', () => {
         })
       );
     });
-
-    it('should also work on alias endpoint /api/v1/relay/otp', async () => {
-      const { a, pairId } = await createPairedPair('pair_relay_alias');
-
-      const res = await request(server)
-        .post('/api/v1/relay/otp')
-        .set(bearer(a.token))
-        .send(relayBody(pairId, 'msg_alias_1'));
-
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.message_id).toBe('msg_alias_1');
-    });
   });
 
   describe('GET /api/v1/relay/pending/:pairId (Pending Messages Queue)', () => {
@@ -793,7 +773,7 @@ describe('SMS Navigator Server Integration Tests', () => {
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_pending_001'));
       const relay2 = await request(server)
-        .post('/api/v1/relay/otp')
+        .post('/api/v1/relay')
         .set(bearer(a.token))
         .send(relayBody(pairId, 'msg_pending_002'));
       expect(relay1.status).toBe(200);
@@ -852,22 +832,6 @@ describe('SMS Navigator Server Integration Tests', () => {
         .set(bearer(a.token));
       expect(res.status).toBe(200);
       expect(res.body.count).toBe(1);
-    });
-
-    it('should also work on alias endpoint /api/v1/relay/otp/pending/:pairId', async () => {
-      const { a, b, pairId } = await createPairedPair('pair_pending_alias');
-
-      await request(server)
-        .post('/api/v1/relay')
-        .set(bearer(a.token))
-        .send(relayBody(pairId, 'msg_alias_pending_1'));
-
-      const res = await request(server)
-        .get(`/api/v1/relay/otp/pending/${pairId}`)
-        .set(bearer(b.token));
-      expect(res.status).toBe(200);
-      expect(res.body.count).toBe(1);
-      expect(res.body.messages[0].message_id).toBe('msg_alias_pending_1');
     });
 
     describe('GET /api/v1/relay/history (OTP History by Day)', () => {

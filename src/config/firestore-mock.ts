@@ -9,16 +9,7 @@
 export type MockFieldValue = unknown;
 export type MockDocumentData = Record<string, MockFieldValue>;
 
-export type MockWhereFilterOp =
-  | '=='
-  | '!='
-  | '>'
-  | '>='
-  | '<'
-  | '<='
-  | 'array-contains'
-  | 'in'
-  | 'not-in';
+export type MockWhereFilterOp = '==' | '<' | '<=';
 
 export interface MockSetOptions {
   merge?: boolean;
@@ -67,20 +58,6 @@ function matchesOp(actual: MockFieldValue, op: MockWhereFilterOp, expected: Mock
   switch (op) {
     case '==':
       return actual === expected;
-    case '!=':
-      return actual !== expected;
-    case 'in':
-    case 'not-in': {
-      const list = Array.isArray(expected) ? expected : [];
-      const contains = list.some((item) => item === actual);
-      return op === 'in' ? contains : !contains;
-    }
-    case 'array-contains':
-      return Array.isArray(actual) && actual.some((item) => item === expected);
-    case '>':
-      return typeof actual === 'number' && typeof expected === 'number' && actual > expected;
-    case '>=':
-      return typeof actual === 'number' && typeof expected === 'number' && actual >= expected;
     case '<':
       return typeof actual === 'number' && typeof expected === 'number' && actual < expected;
     case '<=':
@@ -125,10 +102,6 @@ export class MockQuerySnapshot {
   public get size(): number {
     return this.docs.length;
   }
-
-  public forEach(callback: (snapshot: MockDocumentSnapshot) => void): void {
-    this.docs.forEach(callback);
-  }
 }
 
 interface QueryConstraint {
@@ -142,27 +115,15 @@ export class MockQuery {
   constructor(
     protected readonly store: Map<string, MockDocumentData>,
     private readonly constraints: QueryConstraint[] = [],
-    private readonly limitCount: number | null = null,
-    private readonly orderByField: string | null = null,
-    private readonly orderByDirection: 'asc' | 'desc' = 'asc'
+    private readonly limitCount: number | null = null
   ) {}
 
   public where(field: string, op: MockWhereFilterOp, value: MockFieldValue): MockQuery {
-    return new MockQuery(
-      this.store,
-      [...this.constraints, { type: 'where', field, op, value }],
-      this.limitCount,
-      this.orderByField,
-      this.orderByDirection
-    );
+    return new MockQuery(this.store, [...this.constraints, { type: 'where', field, op, value }], this.limitCount);
   }
 
   public limit(count: number): MockQuery {
-    return new MockQuery(this.store, this.constraints, count, this.orderByField, this.orderByDirection);
-  }
-
-  public orderBy(field: string, direction: 'asc' | 'desc' = 'asc'): MockQuery {
-    return new MockQuery(this.store, this.constraints, this.limitCount, field, direction);
+    return new MockQuery(this.store, this.constraints, count);
   }
 
   public async get(): Promise<MockQuerySnapshot> {
@@ -175,18 +136,6 @@ export class MockQuery {
       snapshots = snapshots.filter((snapshot) => {
         const actual = getField(snapshot.data() ?? {}, constraint.field);
         return matchesOp(actual, constraint.op, constraint.value);
-      });
-    }
-
-    if (this.orderByField) {
-      const dir = this.orderByDirection === 'desc' ? -1 : 1;
-      snapshots.sort((a, b) => {
-        const av = getField(a.data() ?? {}, this.orderByField!);
-        const bv = getField(b.data() ?? {}, this.orderByField!);
-        if (av === bv) return 0;
-        if (av === undefined) return 1;
-        if (bv === undefined) return -1;
-        return (av as number) < (bv as number) ? -1 * dir : 1 * dir;
       });
     }
 

@@ -127,13 +127,6 @@ export class DeviceService {
     }
   }
 
-  public async count(): Promise<number> {
-    const db = getFirestoreDb();
-    if (!db) return 0;
-    const snapshot = await db.collection(DEVICES_COLLECTION).get();
-    return snapshot.size;
-  }
-
   public async clearAll(): Promise<void> {
     const db = getFirestoreDb();
     if (!db) return;

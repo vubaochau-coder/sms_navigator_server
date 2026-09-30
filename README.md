@@ -52,12 +52,11 @@ npm start
 
 | Phương thức | Endpoint | Mô tả |
 | :--- | :--- | :--- |
-| `GET` | `/health` hoặc `/api/v1/health` | Kiểm tra tình trạng server & kết nối Firebase |
+| `GET` | `/api/v1/health` | Kiểm tra tình trạng server & kết nối Firebase |
 | `POST` | `/api/v1/pair/confirm` | Máy B xác nhận ghép đôi & đăng ký FCM token |
 | `GET` | `/api/v1/pair/status/:pairId` | Kiểm tra trạng thái liên kết của pairId |
 | `DELETE` | `/api/v1/pair/:pairId` | Hủy phiên ghép đôi (Unpair) |
 | `POST` | `/api/v1/relay` | Tiếp nhận encrypted OTP từ Máy A và bắn FCM sang Máy B |
-| `POST` | `/api/v1/relay/otp` | Alias của `/api/v1/relay` |
 
 ---
 

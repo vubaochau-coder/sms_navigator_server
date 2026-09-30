@@ -47,8 +47,17 @@ export function initFirebase(): typeof admin {
   return admin;
 }
 
+/**
+ * Whether the REAL Firebase Admin SDK is connected.
+ *
+ * Returns `false` in mock/test mode or when SDK initialization failed,
+ * so the health check does not report a meaningless hardcoded `true`.
+ */
 export function isFirebaseReady(): boolean {
-  return isFirebaseInitialized;
+  if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
+    return false;
+  }
+  return admin.apps.length > 0;
 }
 
 /**
@@ -82,8 +91,4 @@ export function getFirestoreDb(): admin.firestore.Firestore | null {
     cachedDb = mockFirestore as unknown as admin.firestore.Firestore;
     return cachedDb;
   }
-}
-
-export function isMockFirestore(): boolean {
-  return env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test';
 }

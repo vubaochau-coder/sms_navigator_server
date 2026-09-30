@@ -3,7 +3,6 @@ import { randomUUID } from 'crypto';
 import { sessionService } from '../services/session.service.js';
 import { fcmService } from '../services/fcm.service.js';
 import { RelayPayloadRequest, RelayPayloadResponse } from '../types/index.js';
-import { env } from '../config/env.js';
 
 export class RelayController {
   public static async relayOtp(req: Request, res: Response): Promise<void> {
@@ -14,7 +13,7 @@ export class RelayController {
       encrypted_payload,
       iv,
       sent_at,
-      ttl_seconds = env.MAX_RELAY_TTL_SECONDS
+      ttl_seconds
     }: RelayPayloadRequest = req.body;
 
     const now = Math.floor(Date.now() / 1000);
@@ -84,7 +83,7 @@ export class RelayController {
       return;
     }
 
-    // 6. Store the encrypted payload in the pending queue (5 minutes TTL)
+    // 7. Store the encrypted payload in the pending queue (5 minutes TTL)
     // so the receiver can fetch it via GET /relay/pending/:pairId even if
     // the FCM push is missed or dropped.
     const pendingMessageId = message_id ?? randomUUID();
@@ -106,11 +105,10 @@ export class RelayController {
       iv,
       sent_at,
       relayed_at: now,
-      status: pair.fcm_token ? 'SUCCESS' : 'QUEUED',
       message_id: message_id ?? pendingMessageId
     });
 
-    // 7. Blind relay: forward the encrypted payload untouched via FCM High-Priority Data message
+    // 8. Blind relay: forward the encrypted payload untouched via FCM High-Priority Data message
     if (pair.fcm_token) {
       try {
         const fcmMessageId = await fcmService.sendRelayDataMessage({

@@ -47,7 +47,13 @@ describe('SessionService Unit Tests', () => {
     const msgId = 'msg_unique_uuid_999';
     expect(await sessionService.isMessageProcessed(msgId)).toBe(false);
 
-    await sessionService.markMessageProcessed(msgId);
+    await sessionService.addPendingMessage('pair_dedup_test', {
+      message_id: msgId,
+      encrypted_payload: 'U2FsdGVkX19mock==',
+      iv: 'aXZfc2FsdF8xMmJ5dGVz',
+      sent_at: Math.floor(Date.now() / 1000),
+      ttl_seconds: 300
+    });
     expect(await sessionService.isMessageProcessed(msgId)).toBe(true);
   });
 

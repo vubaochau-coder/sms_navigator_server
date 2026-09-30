@@ -26,7 +26,6 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     return;
   }
 
-  device.last_active_at = Math.floor(Date.now() / 1000);
   req.device = device;
   void deviceService.touchDevice(device.device_id);
   next();
