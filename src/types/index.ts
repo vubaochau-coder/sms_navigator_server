@@ -15,9 +15,6 @@ export interface PairEntity {
   receiver_device_id?: string; // Device B - bound after successful pairing confirmation
   receiver_device_name?: string; // Device B name for Sender UI display
   is_active: boolean; // Sender toggle: true = active relay, false = paused by sender
-  pairing_code_hash?: string; // SHA-256 hex digest of the 6-digit code
-  pairing_code_expires_at?: string; // ISO 8601 UTC (10 minutes TTL)
-  pairing_attempts: number; // max 5 failed attempts before the code is invalidated
   fcm_token?: string; // receiver FCM token registered at confirm time
   platform?: string; // receiver platform
   created_at: string; // ISO 8601 UTC
@@ -87,7 +84,6 @@ export interface DeviceFcmTokenRequest {
 
 export interface PairConfirmRequest {
   pair_id: string;
-  pairing_code?: string;
   fcm_token?: string;
   device_name?: string;
   platform?: string;
@@ -110,9 +106,6 @@ export interface PairStatusResponse {
   platform?: string;
   paired_at?: string; // ISO 8601 UTC
   expires_at?: string; // ISO 8601 UTC
-  pairing_code_expires_at?: string; // ISO 8601 UTC
-  pairing_code_expired?: boolean;
-  pairing_attempts_remaining?: number;
   is_active?: boolean;
 }
 

@@ -7,10 +7,10 @@ import { pairRateLimiter } from '../middlewares/rate-limit.middleware.js';
 
 const router = Router();
 
-// Device A initiates pairing: generates a single-use 6-digit code (stored as SHA-256 hash)
+// Device A initiates pairing: creates the pair session confirmed via QR payload
 router.post('/init', authenticate, pairRateLimiter, validateBody(pairInitSchema), PairController.initPairing);
 
-// Device B confirms pairing & registers its FCM token
+// Device B confirms pairing (QR flow) & registers its FCM token
 router.post('/confirm', authenticate, pairRateLimiter, validateBody(pairConfirmSchema), PairController.confirmPairing);
 
 // Query pairing status (restricted to Device A / Device B of the pair)

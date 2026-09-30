@@ -13,11 +13,10 @@ import { nowIso, msToIso, isoToMs, toIsoString } from '../utils/time.js';
 export const PAIRS_COLLECTION = 'pairs';
 export const MESSAGES_COLLECTION = 'messages';
 
-export const PAIRING_CODE_TTL_SECONDS = 600; // 10 minutes
-export const MAX_PAIRING_ATTEMPTS = 5; // 5 wrong guesses invalidate the code
 export const MESSAGE_DEDUP_TTL_SECONDS = 600; // 10 minutes
 export const PENDING_MESSAGE_TTL_SECONDS = 300; // 5 minutes
-const STALE_PENDING_PAIR_SECONDS = 3600;
+export const MESSAGE_HISTORY_TTL_SECONDS = 86400; // relay history is kept for 24 hours
+const STALE_PENDING_PAIR_SECONDS = 600; // unconfirmed pairs follow the QR payload's 10-minute TTL
 
 export interface PairConfirmParams {
   receiver_device_id: string;
@@ -35,15 +34,12 @@ function pairToDocument(pair: PairEntity): Record<string, unknown> {
     pair_id: pair.pair_id,
     sender_device_id: pair.sender_device_id,
     is_active: pair.is_active !== false,
-    pairing_attempts: pair.pairing_attempts,
     created_at: pair.created_at,
     last_active_at: pair.last_active_at
   };
   if (pair.sender_device_name !== undefined) doc.sender_device_name = pair.sender_device_name;
   if (pair.receiver_device_id !== undefined) doc.receiver_device_id = pair.receiver_device_id;
   if (pair.receiver_device_name !== undefined) doc.receiver_device_name = pair.receiver_device_name;
-  if (pair.pairing_code_hash !== undefined) doc.pairing_code_hash = pair.pairing_code_hash;
-  if (pair.pairing_code_expires_at !== undefined) doc.pairing_code_expires_at = pair.pairing_code_expires_at;
   if (pair.fcm_token !== undefined) doc.fcm_token = pair.fcm_token;
   if (pair.platform !== undefined) doc.platform = pair.platform;
   if (pair.paired_at !== undefined) doc.paired_at = pair.paired_at;
@@ -60,9 +56,6 @@ function pairFromDocument(id: string, data: Record<string, unknown> | undefined)
     receiver_device_id: data.receiver_device_id as string | undefined,
     receiver_device_name: data.receiver_device_name as string | undefined,
     is_active: data.is_active !== false,
-    pairing_code_hash: data.pairing_code_hash as string | undefined,
-    pairing_code_expires_at: data.pairing_code_expires_at as string | undefined,
-    pairing_attempts: Number(data.pairing_attempts ?? 0),
     fcm_token: data.fcm_token as string | undefined,
     platform: data.platform as string | undefined,
     created_at: toIsoString(data.created_at),
@@ -105,14 +98,16 @@ function toHistoryRecord(entity: MessageEntity): RelayHistoryRecord {
   };
 }
 
+export const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export class SessionService {
   private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor() {
-    // Run cleanup every minute
+    // Run cleanup once every 24 hours
     this.cleanupInterval = setInterval(() => {
       void this.cleanExpiredSessions().catch(() => undefined);
-    }, 60 * 1000);
+    }, CLEANUP_INTERVAL_MS);
 
     // Prevent interval from blocking process shutdown
     if (this.cleanupInterval.unref) {
@@ -148,7 +143,6 @@ export class SessionService {
       sender_device_id: senderDeviceId,
       sender_device_name: senderDeviceName,
       is_active: true,
-      pairing_attempts: 0,
       created_at: now,
       last_active_at: now
     };
@@ -233,37 +227,6 @@ export class SessionService {
     return pair;
   }
 
-  public async setPairingCode(pairId: string, codeHash: string): Promise<PairEntity | null> {
-    const pair = await this.rawGetPair(pairId);
-    if (!pair) return null;
-
-    const now = nowMs();
-    pair.pairing_code_hash = codeHash;
-    pair.pairing_code_expires_at = msToIso(now + PAIRING_CODE_TTL_SECONDS * 1000);
-    pair.pairing_attempts = 0;
-    pair.last_active_at = nowIso();
-
-    await this.savePair(pair);
-    return pair;
-  }
-
-  public async recordFailedAttempt(pairId: string): Promise<number> {
-    const pair = await this.rawGetPair(pairId);
-    if (!pair) return 0;
-
-    pair.pairing_attempts += 1;
-    pair.last_active_at = nowIso();
-
-    if (pair.pairing_attempts >= MAX_PAIRING_ATTEMPTS) {
-      // Brute-force guard: invalidate the code once the guess budget is exhausted
-      pair.pairing_code_hash = undefined;
-      pair.pairing_code_expires_at = undefined;
-    }
-
-    await this.savePair(pair);
-    return pair.pairing_attempts;
-  }
-
   public async confirmPairing(pairId: string, params: PairConfirmParams): Promise<PairEntity | null> {
     const pair = await this.rawGetPair(pairId);
     if (!pair) return null;
@@ -276,11 +239,6 @@ export class SessionService {
     pair.paired_at = nowIso();
     pair.expires_at = msToIso(now + env.SESSION_TTL_HOURS * 3600 * 1000);
     pair.last_active_at = nowIso();
-
-    // One-time use: the code can never be redeemed again
-    pair.pairing_code_hash = undefined;
-    pair.pairing_code_expires_at = undefined;
-    pair.pairing_attempts = 0;
 
     await this.savePair(pair);
     return pair;
@@ -418,7 +376,7 @@ export class SessionService {
         removedCount++;
       }
 
-      // Stale pending pairs: never confirmed within 1 hour
+      // Stale pending pairs: never confirmed within the 10-minute QR window
       const stale = await db
         .collection(PAIRS_COLLECTION)
         .where('created_at', '<', msToIso(nowMs() - STALE_PENDING_PAIR_SECONDS * 1000))
@@ -429,6 +387,17 @@ export class SessionService {
           await doc.ref.delete();
           removedCount++;
         }
+      }
+
+      // Relay messages older than 24h: dedup (10 min) and history views
+      // only need one day, so this bounds the `messages` collection size
+      const staleMessages = await db
+        .collection(MESSAGES_COLLECTION)
+        .where('relayed_at', '<', msToIso(nowMs() - MESSAGE_HISTORY_TTL_SECONDS * 1000))
+        .get();
+      for (const doc of staleMessages.docs) {
+        await doc.ref.delete();
+        removedCount++;
       }
     } catch (error) {
       // eslint-disable-next-line no-console

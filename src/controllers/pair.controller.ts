@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
-import { randomInt, randomUUID } from 'crypto';
-import { sessionService, MAX_PAIRING_ATTEMPTS } from '../services/session.service.js';
-import { sha256Hex } from '../services/device.service.js';
+import { randomUUID } from 'crypto';
+import { sessionService } from '../services/session.service.js';
 import { PairedReceiverItem, PairedSenderItem, PairConfirmRequest, PairStatusResponse } from '../types/index.js';
 import { isoToMs } from '../utils/time.js';
 
@@ -33,22 +32,17 @@ export class PairController {
     }
 
     const pair = existing ?? (await sessionService.createPair(pairId, device.device_id));
-    const pairingCode = String(randomInt(0, 1_000_000)).padStart(6, '0');
-    const updated = await sessionService.setPairingCode(pair.pair_id, sha256Hex(pairingCode));
 
     res.status(201).json({
       success: true,
-      message: 'Pairing code generated. Share it with Device B: valid for 10 minutes, single use.',
-      pair_id: pair.pair_id,
-      pairing_code: pairingCode,
-      expires_at: updated!.pairing_code_expires_at!
+      message: 'Pairing session created. Share the QR payload with Device B to confirm.',
+      pair_id: pair.pair_id
     });
   }
 
   public static async confirmPairing(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { pair_id, pairing_code, fcm_token, device_name, platform } =
-      req.body as PairConfirmRequest;
+    const { pair_id, fcm_token, device_name, platform } = req.body as PairConfirmRequest;
 
     const pair = await sessionService.getPair(pair_id);
     if (!pair) {
@@ -64,7 +58,7 @@ export class PairController {
       res.status(400).json({
         success: false,
         error: 'SELF_PAIRING_NOT_ALLOWED',
-        message: 'Device A cannot confirm its own pairing code. Pairing must be confirmed by Device B.'
+        message: 'Device A cannot confirm its own pairing. Pairing must be confirmed by Device B.'
       });
       return;
     }
@@ -78,49 +72,8 @@ export class PairController {
       return;
     }
 
-    if (pair.pairing_attempts >= MAX_PAIRING_ATTEMPTS) {
-      res.status(429).json({
-        success: false,
-        error: 'TOO_MANY_ATTEMPTS',
-        message: `Maximum of ${MAX_PAIRING_ATTEMPTS} incorrect attempts reached. The pairing code has been invalidated.`
-      });
-      return;
-    }
-
-    // QR-based pairing: no 6-digit code required, the scanned pair payload
-    // (pair_id + authenticated sender identity) is sufficient to confirm.
-    if (pairing_code !== undefined) {
-      if (!pair.pairing_code_hash) {
-        res.status(400).json({
-          success: false,
-          error: 'NO_PENDING_PAIRING',
-          message: 'No pending pairing code for this pair (never generated or already used).'
-        });
-        return;
-      }
-
-      const now = Date.now();
-      if (pair.pairing_code_expires_at === undefined || isoToMs(pair.pairing_code_expires_at) <= now) {
-        res.status(400).json({
-          success: false,
-          error: 'PAIRING_CODE_EXPIRED',
-          message: 'The pairing code has expired. Device A must call /pair/init again.'
-        });
-        return;
-      }
-
-      if (sha256Hex(pairing_code) !== pair.pairing_code_hash) {
-        const attempts = await sessionService.recordFailedAttempt(pair_id);
-        const remaining = Math.max(0, MAX_PAIRING_ATTEMPTS - attempts);
-        res.status(400).json({
-          success: false,
-          error: 'INVALID_PAIRING_CODE',
-          message: `Incorrect pairing code. ${remaining} attempts remaining.`
-        });
-        return;
-      }
-    }
-
+    // QR-based pairing: the scanned pair payload (pair_id + authenticated
+    // sender identity) is sufficient to confirm.
     const confirmed = await sessionService.confirmPairing(pair_id, {
       receiver_device_id: device.device_id,
       fcm_token: fcm_token ?? device.fcm_token ?? '',
@@ -172,10 +125,6 @@ export class PairController {
       platform: pair.platform,
       paired_at: pair.paired_at,
       expires_at: pair.expires_at,
-      pairing_code_expires_at: pair.pairing_code_expires_at,
-      pairing_code_expired:
-        pair.pairing_code_expires_at !== undefined && isoToMs(pair.pairing_code_expires_at) <= now,
-      pairing_attempts_remaining: Math.max(0, MAX_PAIRING_ATTEMPTS - pair.pairing_attempts),
       is_active: pair.is_active !== false
     };
 

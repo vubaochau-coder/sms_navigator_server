@@ -1,4 +1,6 @@
-import { SessionService } from '../src/services/session.service.js';
+import { SessionService, MESSAGES_COLLECTION, MESSAGE_HISTORY_TTL_SECONDS } from '../src/services/session.service.js';
+import { getFirestoreDb } from '../src/config/firebase.js';
+import { msToIso } from '../src/utils/time.js';
 
 describe('SessionService Unit Tests', () => {
   let sessionService: SessionService;
@@ -27,23 +29,6 @@ describe('SessionService Unit Tests', () => {
     expect(retrieved?.sender_device_id).toBe(senderId);
   });
 
-  it('should set pairing code and lock after max failed attempts', async () => {
-    const pairId = 'pair_bruteforce_test';
-    await sessionService.createPair(pairId, 'device_a');
-    await sessionService.setPairingCode(pairId, 'hash_of_123456');
-
-    for (let i = 0; i < 4; i++) {
-      expect(await sessionService.recordFailedAttempt(pairId)).toBe(i + 1);
-      const pair = await sessionService.getPair(pairId);
-      expect(pair?.pairing_code_hash).toBe('hash_of_123456');
-    }
-
-    // 5th attempt exhausts budget
-    expect(await sessionService.recordFailedAttempt(pairId)).toBe(5);
-    const lockedPair = await sessionService.getPair(pairId);
-    expect(lockedPair?.pairing_code_hash).toBeUndefined();
-  });
-
   it('should deduplicate messages by message_id', async () => {
     const msgId = 'msg_unique_uuid_999';
     expect(await sessionService.isMessageProcessed(msgId)).toBe(false);
@@ -56,6 +41,53 @@ describe('SessionService Unit Tests', () => {
       ttl_seconds: 300
     });
     expect(await sessionService.isMessageProcessed(msgId)).toBe(true);
+  });
+
+  it('should clean up relay messages older than 24h and keep fresh ones', async () => {
+    const db = getFirestoreDb();
+    expect(db).not.toBeNull();
+
+    const oldRelayedAt = msToIso(Date.now() - (MESSAGE_HISTORY_TTL_SECONDS + 3600) * 1000);
+    await db!.collection(MESSAGES_COLLECTION).doc('msg_too_old').set({
+      message_id: 'msg_too_old',
+      pair_id: 'pair_cleanup',
+      relayed_at: oldRelayedAt,
+      status: 'PENDING'
+    });
+    await db!.collection(MESSAGES_COLLECTION).doc('msg_fresh').set({
+      message_id: 'msg_fresh',
+      pair_id: 'pair_cleanup',
+      relayed_at: new Date().toISOString(),
+      status: 'PENDING'
+    });
+
+    await sessionService.cleanExpiredSessions();
+
+    expect((await db!.collection(MESSAGES_COLLECTION).doc('msg_too_old').get()).exists).toBe(false);
+    expect((await db!.collection(MESSAGES_COLLECTION).doc('msg_fresh').get()).exists).toBe(true);
+  });
+
+  it('should remove stale unconfirmed pairs after the 10-minute QR window', async () => {
+    const db = getFirestoreDb();
+    expect(db).not.toBeNull();
+
+    const staleCreatedAt = msToIso(Date.now() - 11 * 60 * 1000);
+    await db!.collection('pairs').doc('pair_stale_pending').set({
+      pair_id: 'pair_stale_pending',
+      sender_device_id: 'device_stale_sender',
+      created_at: staleCreatedAt,
+      last_active_at: staleCreatedAt
+    });
+    const confirmedPair = await sessionService.createPair('pair_confirmed_recent', 'device_recent_sender');
+    await sessionService.confirmPairing(confirmedPair.pair_id, {
+      receiver_device_id: 'device_recent_receiver',
+      fcm_token: 'fcm_recent_12345'
+    });
+
+    await sessionService.cleanExpiredSessions();
+
+    expect((await db!.collection('pairs').doc('pair_stale_pending').get()).exists).toBe(false);
+    expect(await sessionService.getPair('pair_confirmed_recent')).not.toBeNull();
   });
 
   it('should remove pair by pairId', async () => {

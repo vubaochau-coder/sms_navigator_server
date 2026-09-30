@@ -5,6 +5,11 @@ import { fcmService } from '../services/fcm.service.js';
 import { RelayPayloadRequest, RelayPayloadResponse } from '../types/index.js';
 import { nowIso, msToIso, isoToMs, dayRange, parseTzOffsetMinutes } from '../utils/time.js';
 
+// Device clocks drift: accept payloads stamped up to 2 minutes in the
+// future, and extend the effective TTL by the same buffer before declaring
+// a payload expired.
+const CLOCK_SKEW_TOLERANCE_SECONDS = 120;
+
 export class RelayController {
   public static async relayOtp(req: Request, res: Response): Promise<void> {
     const device = req.device!;
@@ -21,11 +26,22 @@ export class RelayController {
     const sentAtMs = isoToMs(sent_at);
 
     // 1. Verify that the OTP payload hasn't expired before reaching server
-    if (now - sentAtMs > ttl_seconds * 1000) {
+    //    (with clock-skew tolerance on both ends of the window)
+    const elapsedMs = now - sentAtMs;
+    if (elapsedMs > (ttl_seconds + CLOCK_SKEW_TOLERANCE_SECONDS) * 1000) {
       res.status(400).json({
         success: false,
         error: 'PAYLOAD_EXPIRED',
-        message: `OTP relay payload has expired (${Math.floor((now - sentAtMs) / 1000)}s elapsed, max TTL is ${ttl_seconds}s)`
+        message: `OTP relay payload has expired (${Math.floor(elapsedMs / 1000)}s elapsed, max TTL is ${ttl_seconds}s)`
+      });
+      return;
+    }
+
+    if (elapsedMs < -CLOCK_SKEW_TOLERANCE_SECONDS * 1000) {
+      res.status(400).json({
+        success: false,
+        error: 'INVALID_SENT_AT',
+        message: `sent_at is more than ${CLOCK_SKEW_TOLERANCE_SECONDS}s in the future. Check the device clock.`
       });
       return;
     }
