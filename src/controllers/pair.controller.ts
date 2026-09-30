@@ -10,7 +10,7 @@ export class PairController {
     const requestedPairId: string | undefined = req.body?.pair_id;
     const pairId = requestedPairId ?? randomUUID();
 
-    const existing = sessionService.getPair(pairId);
+    const existing = await sessionService.getPair(pairId);
     if (existing) {
       if (existing.sender_device_id !== device.device_id) {
         res.status(403).json({
@@ -31,9 +31,9 @@ export class PairController {
       }
     }
 
-    const pair = existing ?? sessionService.createPair(pairId, device.device_id);
+    const pair = existing ?? (await sessionService.createPair(pairId, device.device_id));
     const pairingCode = String(randomInt(0, 1_000_000)).padStart(6, '0');
-    const updated = sessionService.setPairingCode(pair.pair_id, sha256Hex(pairingCode));
+    const updated = await sessionService.setPairingCode(pair.pair_id, sha256Hex(pairingCode));
 
     res.status(201).json({
       success: true,
@@ -49,7 +49,7 @@ export class PairController {
     const { pair_id, pairing_code, fcm_token, device_name, platform } =
       req.body as PairConfirmRequest;
 
-    const pair = sessionService.getPair(pair_id);
+    const pair = await sessionService.getPair(pair_id);
     if (!pair) {
       res.status(404).json({
         success: false,
@@ -109,7 +109,7 @@ export class PairController {
       }
 
       if (sha256Hex(pairing_code) !== pair.pairing_code_hash) {
-        const attempts = sessionService.recordFailedAttempt(pair_id);
+        const attempts = await sessionService.recordFailedAttempt(pair_id);
         const remaining = Math.max(0, MAX_PAIRING_ATTEMPTS - attempts);
         res.status(400).json({
           success: false,
@@ -120,7 +120,7 @@ export class PairController {
       }
     }
 
-    const confirmed = sessionService.confirmPairing(pair_id, {
+    const confirmed = await sessionService.confirmPairing(pair_id, {
       receiver_device_id: device.device_id,
       fcm_token: fcm_token ?? device.fcm_token ?? '',
       device_name,
@@ -140,7 +140,7 @@ export class PairController {
     const device = req.device!;
     const pairId = String(req.params.pairId);
 
-    const pair = sessionService.getPair(pairId);
+    const pair = await sessionService.getPair(pairId);
     if (!pair) {
       res.status(404).json({
         success: false,
@@ -167,7 +167,7 @@ export class PairController {
         (pair.expires_at === undefined || pair.expires_at > now),
       sender_device_id: pair.sender_device_id,
       receiver_device_id: pair.receiver_device_id,
-      device_name: pair.device_name,
+      device_name: pair.receiver_device_name,
       platform: pair.platform,
       paired_at: pair.paired_at,
       expires_at: pair.expires_at,
@@ -185,7 +185,7 @@ export class PairController {
     const device = req.device!;
     const pairId = String(req.params.pairId);
 
-    const pair = sessionService.getPair(pairId);
+    const pair = await sessionService.getPair(pairId);
     if (!pair) {
       res.status(404).json({
         success: false,
@@ -204,7 +204,7 @@ export class PairController {
       return;
     }
 
-    sessionService.removePair(pairId);
+    await sessionService.removePair(pairId);
 
     res.status(200).json({
       success: true,
@@ -217,12 +217,12 @@ export class PairController {
    */
   public static async getPairedReceivers(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const pairs = sessionService.getPairsBySender(device.device_id);
+    const pairs = await sessionService.getPairsBySender(device.device_id);
 
     const receivers = pairs.map((p) => ({
       pair_id: p.pair_id,
       receiver_device_id: p.receiver_device_id!,
-      device_name: p.device_name || 'Thiết bị nhận',
+      device_name: p.receiver_device_name || 'Thiết bị nhận',
       platform: p.platform || 'Android',
       paired_at: p.paired_at ?? p.created_at,
       last_active_at: p.last_active_at,
@@ -242,7 +242,7 @@ export class PairController {
    */
   public static async getPairedSenders(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const pairs = sessionService.getPairsByReceiver(device.device_id);
+    const pairs = await sessionService.getPairsByReceiver(device.device_id);
 
     const senders = pairs.map((p) => ({
       pair_id: p.pair_id,
@@ -278,7 +278,7 @@ export class PairController {
       return;
     }
 
-    const pair = sessionService.getPair(pairId);
+    const pair = await sessionService.getPair(pairId);
     if (!pair) {
       res.status(404).json({
         success: false,
@@ -297,7 +297,7 @@ export class PairController {
       return;
     }
 
-    sessionService.setPairActive(pairId, is_active, device.device_id);
+    await sessionService.setPairActive(pairId, is_active, device.device_id);
 
     res.status(200).json({
       success: true,

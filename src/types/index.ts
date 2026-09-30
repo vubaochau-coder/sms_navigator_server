@@ -13,17 +13,39 @@ export interface PairEntity {
   sender_device_id: string; // Device A - the only device allowed to relay OTP payloads
   sender_device_name?: string; // Device A name for Receiver UI display
   receiver_device_id?: string; // Device B - bound after successful pairing confirmation
+  receiver_device_name?: string; // Device B name for Sender UI display
   is_active: boolean; // Sender toggle: true = active relay, false = paused by sender
   pairing_code_hash?: string; // SHA-256 hex digest of the 6-digit code
   pairing_code_expires_at?: number; // Unix timestamp in seconds (10 minutes TTL)
   pairing_attempts: number; // max 5 failed attempts before the code is invalidated
   fcm_token?: string; // receiver FCM token registered at confirm time
-  device_name?: string; // receiver device name
   platform?: string; // receiver platform
   created_at: number; // Unix timestamp in seconds
   paired_at?: number; // Unix timestamp in seconds
   expires_at?: number; // Unix timestamp in seconds
   last_active_at: number; // Unix timestamp in seconds
+}
+
+export type MessageStatus = 'PENDING' | 'SUCCESS' | 'FAILED';
+
+/**
+ * Document model of the `messages` collection (doc ID = message_id).
+ * Serves both the polling queue (status PENDING) and the per-day relay history.
+ */
+export interface MessageEntity {
+  message_id: string;
+  pair_id: string;
+  sender_device_id: string;
+  receiver_device_ids?: string[];
+  encrypted_payload: string;
+  iv: string;
+  sent_at: number; // Unix timestamp in seconds
+  relayed_at: number; // Unix timestamp in seconds
+  date: string; // YYYY-MM-DD (relayed_at date, used for history queries)
+  status: MessageStatus; // PENDING = waiting in polling queue, SUCCESS = fetched/pushed
+  expire_at?: number; // Unix timestamp in seconds (sent_at + ttl)
+  sender_device_name?: string; // for RelayHistoryResponse contract
+  ttl_seconds?: number; // original payload TTL from the sender
 }
 
 export interface PairedReceiverItem {

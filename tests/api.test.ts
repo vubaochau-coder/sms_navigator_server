@@ -66,9 +66,9 @@ describe('SMS Navigator Server Integration Tests', () => {
     return { a, b, c, pairId };
   };
 
-  beforeEach(() => {
-    sessionService.clearAll();
-    deviceService.clearAll();
+  beforeEach(async () => {
+    await sessionService.clearAll();
+    await deviceService.clearAll();
     jest.restoreAllMocks();
   });
 
@@ -116,7 +116,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
     it('should store only the SHA-256 hash of the token, never the plaintext', async () => {
       const { token } = await registerDevice('device_hash_check');
-      const device = deviceService.findByDeviceId('device_hash_check');
+      const device = await deviceService.findByDeviceId('device_hash_check');
 
       expect(device).not.toBeNull();
       expect(device!.token_hash).toBe(crypto.createHash('sha256').update(token).digest('hex'));
@@ -206,7 +206,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.device_id).toBe(deviceId);
-      expect(deviceService.findByDeviceId(deviceId)?.fcm_token).toBe('fcm_updated_token_value_12345');
+      expect((await deviceService.findByDeviceId(deviceId))?.fcm_token).toBe('fcm_updated_token_value_12345');
     });
   });
 
@@ -231,7 +231,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.pairing_code).toMatch(/^\d{6}$/);
       expect(res.body.expires_at).toBeGreaterThanOrEqual(nowSeconds() + 590);
 
-      const pair = sessionService.getPair('pair_init_001');
+      const pair = await sessionService.getPair('pair_init_001');
       expect(pair?.sender_device_id).toBe('device_A_init');
       expect(pair?.pairing_code_hash).toBe(sha256Hex(res.body.pairing_code));
       expect(JSON.stringify(pair)).not.toContain(res.body.pairing_code);
@@ -244,7 +244,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
       expect(res.status).toBe(201);
       expect(res.body.pair_id).toBeDefined();
-      expect(sessionService.getPair(res.body.pair_id)?.sender_device_id).toBe('device_A_init_auto');
+      expect((await sessionService.getPair(res.body.pair_id))?.sender_device_id).toBe('device_A_init_auto');
     });
 
     it('should let Device A re-init the same pair with a fresh code', async () => {
@@ -341,7 +341,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('SELF_PAIRING_NOT_ALLOWED');
-      expect(sessionService.getPair('pair_self_block')?.pairing_attempts).toBe(0);
+      expect((await sessionService.getPair('pair_self_block'))?.pairing_attempts).toBe(0);
     });
 
     it('should reject an incorrect code with 400 and count the failed attempt', async () => {
@@ -355,7 +355,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('INVALID_PAIRING_CODE');
       expect(res.body.message).toContain('4 attempts remaining');
-      expect(sessionService.getPair('pair_wrong_code')?.pairing_attempts).toBe(1);
+      expect((await sessionService.getPair('pair_wrong_code'))?.pairing_attempts).toBe(1);
     });
 
     it('should lock the pair after 5 failed attempts (429), even with the correct code', async () => {
@@ -381,8 +381,9 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 400 when the pairing code has expired', async () => {
       const { b, code } = await createPendingPair('pair_expired_code');
 
-      const pair = sessionService.getPair('pair_expired_code')!;
+      const pair = (await sessionService.getPair('pair_expired_code'))!;
       pair.pairing_code_expires_at = nowSeconds() - 10;
+      await sessionService.savePair(pair);
 
       const res = await request(server)
         .post('/api/v1/pair/confirm')
@@ -413,7 +414,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.paired_at).toBeLessThanOrEqual(nowSeconds());
       expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
 
-      const pair = sessionService.getPair('pair_confirm_ok');
+      const pair = await sessionService.getPair('pair_confirm_ok');
       expect(pair?.receiver_device_id).toBe(`B_pair_confirm_ok`);
       expect(pair?.fcm_token).toBe('fcm_receiver_confirmed_12345');
       expect(pair?.pairing_code_hash).toBeUndefined();
@@ -453,7 +454,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.paired_at).toBeLessThanOrEqual(nowSeconds());
       expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
 
-      const pair = sessionService.getPair('pair_qr_flow');
+      const pair = await sessionService.getPair('pair_qr_flow');
       expect(pair?.receiver_device_id).toBe('B_pair_qr_flow');
       expect(pair?.fcm_token).toBe('fcm_qr_receiver_12345');
       expect(pair?.pairing_code_hash).toBeUndefined();
@@ -481,7 +482,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('SELF_PAIRING_NOT_ALLOWED');
-      expect(sessionService.getPair('pair_qr_self')?.receiver_device_id).toBeUndefined();
+      expect((await sessionService.getPair('pair_qr_self'))?.receiver_device_id).toBeUndefined();
     });
   });
 
@@ -558,7 +559,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('FORBIDDEN');
-      expect(sessionService.getPair('pair_revoke_forbidden')).not.toBeNull();
+      expect(await sessionService.getPair('pair_revoke_forbidden')).not.toBeNull();
     });
 
     it('should let Device A revoke the pair', async () => {
@@ -579,7 +580,7 @@ describe('SMS Navigator Server Integration Tests', () => {
 
       const res = await request(server).delete('/api/v1/pair/pair_revoke_by_b').set(bearer(b.token));
       expect(res.status).toBe(200);
-      expect(sessionService.getPair('pair_revoke_by_b')).toBeNull();
+      expect(await sessionService.getPair('pair_revoke_by_b')).toBeNull();
     });
   });
 

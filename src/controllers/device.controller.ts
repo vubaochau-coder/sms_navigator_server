@@ -7,7 +7,7 @@ export class DeviceController {
   public static async registerDevice(req: Request, res: Response): Promise<void> {
     const { device_id, device_name, platform } = req.body as DeviceRegisterRequest;
 
-    const { device, token } = deviceService.registerDevice({ device_id, device_name, platform });
+    const { device, token } = await deviceService.registerDevice({ device_id, device_name, platform });
 
     res.status(201).json({
       success: true,
@@ -23,8 +23,8 @@ export class DeviceController {
     const device = req.device!;
     const { fcm_token } = req.body as DeviceFcmTokenRequest;
 
-    const updated = deviceService.updateFcmToken(device.device_id, fcm_token);
-    sessionService.updateReceiverFcmToken(device.device_id, fcm_token);
+    const updated = await deviceService.updateFcmToken(device.device_id, fcm_token);
+    await sessionService.updateReceiverFcmToken(device.device_id, fcm_token);
 
     res.status(200).json({
       success: true,

@@ -30,7 +30,7 @@ export class RelayController {
     }
 
     // 2. Lookup the pairing session
-    const pair = sessionService.getPair(pair_id);
+    const pair = await sessionService.getPair(pair_id);
     if (!pair) {
       res.status(404).json({
         success: false,
@@ -70,8 +70,9 @@ export class RelayController {
       return;
     }
 
-    // 6. Message deduplication (10 minutes window)
-    if (message_id && sessionService.isMessageProcessed(message_id)) {
+    // 6. Message deduplication (10 minutes window) - checked against the
+    //    `messages` collection by message_id
+    if (message_id && (await sessionService.isMessageProcessed(message_id))) {
       const response: RelayPayloadResponse = {
         success: true,
         message: 'Duplicate message_id ignored (already relayed within the last 10 minutes)',
@@ -87,7 +88,7 @@ export class RelayController {
     // so the receiver can fetch it via GET /relay/pending/:pairId even if
     // the FCM push is missed or dropped.
     const pendingMessageId = message_id ?? randomUUID();
-    sessionService.addPendingMessage(pair_id, {
+    await sessionService.addPendingMessage(pair_id, {
       message_id: pendingMessageId,
       encrypted_payload,
       iv,
@@ -96,7 +97,7 @@ export class RelayController {
     });
 
     // Record in history for OTP logs & analytics by date
-    sessionService.addRelayHistory({
+    await sessionService.addRelayHistory({
       id: pendingMessageId,
       pair_id,
       sender_device_id: device.device_id,
@@ -122,10 +123,6 @@ export class RelayController {
           relayMessageId: message_id
         });
 
-        if (message_id) {
-          sessionService.markMessageProcessed(message_id);
-        }
-
         const response: RelayPayloadResponse = {
           success: true,
           message: 'OTP payload successfully forwarded to receiver via High-Priority FCM',
@@ -136,7 +133,7 @@ export class RelayController {
         res.status(200).json(response);
       } catch (error: any) {
         if (error.message === 'RECEIVER_TOKEN_EXPIRED') {
-          sessionService.removePair(pair_id);
+          await sessionService.removePair(pair_id);
           res.status(410).json({
             success: false,
             error: 'RECEIVER_TOKEN_EXPIRED',
@@ -168,7 +165,7 @@ export class RelayController {
     const device = req.device!;
     const pairId = String(req.params.pairId);
 
-    const pair = sessionService.getPair(pairId);
+    const pair = await sessionService.getPair(pairId);
     if (!pair) {
       res.status(404).json({
         success: false,
@@ -187,7 +184,7 @@ export class RelayController {
       return;
     }
 
-    const messages = sessionService.getAndClearPendingMessages(pairId);
+    const messages = await sessionService.getAndClearPendingMessages(pairId);
 
     res.status(200).json({
       success: true,
@@ -204,7 +201,7 @@ export class RelayController {
     // Default to today (YYYY-MM-DD) if not provided
     const targetDate = dateParam || new Date().toISOString().split('T')[0];
 
-    const records = sessionService.getRelayHistory({
+    const records = await sessionService.getRelayHistory({
       date: targetDate,
       pairId: pairIdParam,
       participantDeviceId: device.device_id

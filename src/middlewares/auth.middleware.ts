@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { deviceService, sha256Hex } from '../services/device.service.js';
 
-export function authenticate(req: Request, res: Response, next: NextFunction): void {
+export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -15,7 +15,7 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
 
   const token = authHeader.slice('Bearer '.length).trim();
   const tokenHash = sha256Hex(token);
-  const device = deviceService.findByTokenHash(tokenHash);
+  const device = await deviceService.findByTokenHash(tokenHash);
 
   if (!device) {
     res.status(401).json({
@@ -28,5 +28,6 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
 
   device.last_active_at = Math.floor(Date.now() / 1000);
   req.device = device;
+  void deviceService.touchDevice(device.device_id);
   next();
 }
