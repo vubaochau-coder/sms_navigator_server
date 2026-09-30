@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { DeviceEntity } from '../types/index.js';
 import { getFirestoreDb } from '../config/firebase.js';
+import { nowIso, toIsoString } from '../utils/time.js';
 
 export const DEVICES_COLLECTION = 'devices';
 
@@ -35,8 +36,8 @@ function fromDocument(id: string, data: Record<string, unknown> | undefined): De
     device_name: data.device_name as string | undefined,
     platform: data.platform as string | undefined,
     fcm_token: data.fcm_token as string | undefined,
-    created_at: Number(data.created_at ?? 0),
-    last_active_at: Number(data.last_active_at ?? 0)
+    created_at: toIsoString(data.created_at),
+    last_active_at: toIsoString(data.last_active_at)
   };
 }
 
@@ -44,7 +45,7 @@ export class DeviceService {
   public async registerDevice(input: DeviceRegisterInput): Promise<{ device: DeviceEntity; token: string }> {
     const token = randomBytes(32).toString('hex');
     const tokenHash = sha256Hex(token);
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowIso();
     const deviceId = input.device_id?.trim() || randomUUID();
 
     const db = getFirestoreDb();
@@ -101,7 +102,7 @@ export class DeviceService {
     const snapshot = await docRef.get();
     if (!snapshot.exists) return null;
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowIso();
     await docRef.update({ fcm_token: fcmToken, last_active_at: now });
 
     const device = fromDocument(deviceId, snapshot.data());
@@ -120,7 +121,7 @@ export class DeviceService {
       await db
         .collection(DEVICES_COLLECTION)
         .doc(deviceId)
-        .update({ last_active_at: Math.floor(Date.now() / 1000) });
+        .update({ last_active_at: nowIso() });
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn(`[DeviceService] Failed to touch device ${deviceId}:`, error);

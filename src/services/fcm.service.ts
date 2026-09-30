@@ -7,7 +7,7 @@ export interface FcmRelayMessageParams {
   pairId: string;
   encryptedPayload: string;
   iv: string;
-  sentAt: number;
+  sentAt: string; // ISO 8601 UTC
   ttlSeconds?: number;
   relayMessageId?: string;
 }

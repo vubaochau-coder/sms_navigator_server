@@ -54,14 +54,26 @@ export function stripUndefinedFields(data: MockDocumentData): MockDocumentData {
   return cleaned;
 }
 
+// Numbers compare numerically; ISO 8601 UTC strings compare chronologically
+// as plain strings, so range queries (`<`, `<=`) work on both kinds of fields.
+function lessThan(actual: MockFieldValue, expected: MockFieldValue, inclusive: boolean): boolean {
+  if (typeof actual === 'number' && typeof expected === 'number') {
+    return inclusive ? actual <= expected : actual < expected;
+  }
+  if (typeof actual === 'string' && typeof expected === 'string') {
+    return inclusive ? actual <= expected : actual < expected;
+  }
+  return false;
+}
+
 function matchesOp(actual: MockFieldValue, op: MockWhereFilterOp, expected: MockFieldValue): boolean {
   switch (op) {
     case '==':
       return actual === expected;
     case '<':
-      return typeof actual === 'number' && typeof expected === 'number' && actual < expected;
+      return lessThan(actual, expected, false);
     case '<=':
-      return typeof actual === 'number' && typeof expected === 'number' && actual <= expected;
+      return lessThan(actual, expected, true);
     default:
       return false;
   }

@@ -2,7 +2,8 @@ import { Request, Response } from 'express';
 import { randomInt, randomUUID } from 'crypto';
 import { sessionService, MAX_PAIRING_ATTEMPTS } from '../services/session.service.js';
 import { sha256Hex } from '../services/device.service.js';
-import { PairConfirmRequest, PairStatusResponse } from '../types/index.js';
+import { PairedReceiverItem, PairedSenderItem, PairConfirmRequest, PairStatusResponse } from '../types/index.js';
+import { isoToMs } from '../utils/time.js';
 
 export class PairController {
   public static async initPairing(req: Request, res: Response): Promise<void> {
@@ -98,8 +99,8 @@ export class PairController {
         return;
       }
 
-      const now = Math.floor(Date.now() / 1000);
-      if (pair.pairing_code_expires_at === undefined || pair.pairing_code_expires_at <= now) {
+      const now = Date.now();
+      if (pair.pairing_code_expires_at === undefined || isoToMs(pair.pairing_code_expires_at) <= now) {
         res.status(400).json({
           success: false,
           error: 'PAIRING_CODE_EXPIRED',
@@ -159,12 +160,12 @@ export class PairController {
       return;
     }
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = Date.now();
     const response: PairStatusResponse = {
       pair_id: pair.pair_id,
       is_paired:
         Boolean(pair.receiver_device_id) &&
-        (pair.expires_at === undefined || pair.expires_at > now),
+        (pair.expires_at === undefined || isoToMs(pair.expires_at) > now),
       sender_device_id: pair.sender_device_id,
       receiver_device_id: pair.receiver_device_id,
       device_name: pair.receiver_device_name,
@@ -173,7 +174,7 @@ export class PairController {
       expires_at: pair.expires_at,
       pairing_code_expires_at: pair.pairing_code_expires_at,
       pairing_code_expired:
-        pair.pairing_code_expires_at !== undefined && pair.pairing_code_expires_at <= now,
+        pair.pairing_code_expires_at !== undefined && isoToMs(pair.pairing_code_expires_at) <= now,
       pairing_attempts_remaining: Math.max(0, MAX_PAIRING_ATTEMPTS - pair.pairing_attempts),
       is_active: pair.is_active !== false
     };
@@ -219,7 +220,7 @@ export class PairController {
     const device = req.device!;
     const pairs = await sessionService.getPairsBySender(device.device_id);
 
-    const receivers = pairs.map((p) => ({
+    const receivers: PairedReceiverItem[] = pairs.map((p) => ({
       pair_id: p.pair_id,
       receiver_device_id: p.receiver_device_id!,
       device_name: p.receiver_device_name || 'Thiết bị nhận',
@@ -244,11 +245,11 @@ export class PairController {
     const device = req.device!;
     const pairs = await sessionService.getPairsByReceiver(device.device_id);
 
-    const senders = pairs.map((p) => ({
+    const senders: PairedSenderItem[] = pairs.map((p) => ({
       pair_id: p.pair_id,
       sender_device_id: p.sender_device_id,
       device_name: p.sender_device_name || 'Thiết bị gửi',
-      platform: 'Android',
+      platform: device.platform || 'Android',
       paired_at: p.paired_at ?? p.created_at,
       last_active_at: p.last_active_at,
       is_active: p.is_active !== false // Indicates whether sender has enabled or paused relay

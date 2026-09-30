@@ -20,6 +20,7 @@ describe('SessionService Unit Tests', () => {
     const created = await sessionService.createPair(pairId, senderId);
     expect(created.pair_id).toBe(pairId);
     expect(created.sender_device_id).toBe(senderId);
+    expect(new Date(created.created_at).toISOString()).toBe(created.created_at);
 
     const retrieved = await sessionService.getPair(pairId);
     expect(retrieved).not.toBeNull();
@@ -51,7 +52,7 @@ describe('SessionService Unit Tests', () => {
       message_id: msgId,
       encrypted_payload: 'U2FsdGVkX19mock==',
       iv: 'aXZfc2FsdF8xMmJ5dGVz',
-      sent_at: Math.floor(Date.now() / 1000),
+      sent_at: new Date().toISOString(),
       ttl_seconds: 300
     });
     expect(await sessionService.isMessageProcessed(msgId)).toBe(true);

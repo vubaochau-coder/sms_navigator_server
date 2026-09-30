@@ -56,7 +56,9 @@ npm start
 | `POST` | `/api/v1/pair/confirm` | Máy B xác nhận ghép đôi & đăng ký FCM token |
 | `GET` | `/api/v1/pair/status/:pairId` | Kiểm tra trạng thái liên kết của pairId |
 | `DELETE` | `/api/v1/pair/:pairId` | Hủy phiên ghép đôi (Unpair) |
-| `POST` | `/api/v1/relay` | Tiếp nhận encrypted OTP từ Máy A và bắn FCM sang Máy B |
+| `POST` | `/api/v1/relay` | Tiếp nhận encrypted OTP từ Máy A và bắn FCM sang Máy B (`sent_at` nhận ISO 8601, epoch giây hoặc mili-giây) |
+| `GET` | `/api/v1/relay/pending/:pairId` | Receiver poll các payload đang chờ (tự clear sau khi fetch) |
+| `GET` | `/api/v1/relay/history` | Lịch sử relay theo dải thời gian ISO 8601 (`?from=...&to=...`) hoặc theo ngày + múi giờ (`?date=YYYY-MM-DD&tz=+07:00`) |
 
 ---
 

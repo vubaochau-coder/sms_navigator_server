@@ -8,6 +8,7 @@ import {
 } from '../types/index.js';
 import { env } from '../config/env.js';
 import { getFirestoreDb } from '../config/firebase.js';
+import { nowIso, msToIso, isoToMs, toIsoString } from '../utils/time.js';
 
 export const PAIRS_COLLECTION = 'pairs';
 export const MESSAGES_COLLECTION = 'messages';
@@ -25,12 +26,8 @@ export interface PairConfirmParams {
   platform?: string;
 }
 
-function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-function toDateString(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
+function nowMs(): number {
+  return Date.now();
 }
 
 function pairToDocument(pair: PairEntity): Record<string, unknown> {
@@ -64,14 +61,14 @@ function pairFromDocument(id: string, data: Record<string, unknown> | undefined)
     receiver_device_name: data.receiver_device_name as string | undefined,
     is_active: data.is_active !== false,
     pairing_code_hash: data.pairing_code_hash as string | undefined,
-    pairing_code_expires_at: data.pairing_code_expires_at as number | undefined,
+    pairing_code_expires_at: data.pairing_code_expires_at as string | undefined,
     pairing_attempts: Number(data.pairing_attempts ?? 0),
     fcm_token: data.fcm_token as string | undefined,
     platform: data.platform as string | undefined,
-    created_at: Number(data.created_at ?? 0),
-    paired_at: data.paired_at as number | undefined,
-    expires_at: data.expires_at as number | undefined,
-    last_active_at: Number(data.last_active_at ?? 0)
+    created_at: toIsoString(data.created_at),
+    paired_at: data.paired_at as string | undefined,
+    expires_at: data.expires_at as string | undefined,
+    last_active_at: toIsoString(data.last_active_at)
   };
 }
 
@@ -84,11 +81,10 @@ function messageFromDocument(id: string, data: Record<string, unknown> | undefin
     receiver_device_ids: Array.isArray(data.receiver_device_ids) ? (data.receiver_device_ids as string[]) : undefined,
     encrypted_payload: String(data.encrypted_payload ?? ''),
     iv: String(data.iv ?? ''),
-    sent_at: Number(data.sent_at ?? 0),
-    relayed_at: Number(data.relayed_at ?? 0),
-    date: String(data.date ?? ''),
+    sent_at: toIsoString(data.sent_at),
+    relayed_at: toIsoString(data.relayed_at),
     status: (data.status as MessageStatus) ?? 'PENDING',
-    expire_at: data.expire_at as number | undefined,
+    expire_at: data.expire_at as string | undefined,
     sender_device_name: data.sender_device_name as string | undefined,
     ttl_seconds: data.ttl_seconds as number | undefined
   };
@@ -145,7 +141,7 @@ export class SessionService {
     senderDeviceId: string,
     senderDeviceName?: string
   ): Promise<PairEntity> {
-    const now = nowSeconds();
+    const now = nowIso();
 
     const pair: PairEntity = {
       pair_id: pairId,
@@ -165,7 +161,7 @@ export class SessionService {
     const db = getFirestoreDb();
     if (!db) return [];
 
-    const now = nowSeconds();
+    const now = nowMs();
     const snapshot = await db
       .collection(PAIRS_COLLECTION)
       .where('sender_device_id', '==', senderDeviceId)
@@ -176,17 +172,17 @@ export class SessionService {
       .filter((pair): pair is PairEntity => {
         if (!pair) return false;
         if (!pair.receiver_device_id) return false;
-        if (pair.expires_at !== undefined && pair.expires_at <= now) return false;
+        if (pair.expires_at !== undefined && isoToMs(pair.expires_at) <= now) return false;
         return true;
       })
-      .sort((a, b) => a.created_at - b.created_at);
+      .sort((a, b) => isoToMs(a.created_at) - isoToMs(b.created_at));
   }
 
   public async getPairsByReceiver(receiverDeviceId: string): Promise<PairEntity[]> {
     const db = getFirestoreDb();
     if (!db) return [];
 
-    const now = nowSeconds();
+    const now = nowMs();
     const snapshot = await db
       .collection(PAIRS_COLLECTION)
       .where('receiver_device_id', '==', receiverDeviceId)
@@ -196,10 +192,10 @@ export class SessionService {
       .map((doc) => pairFromDocument(doc.id, doc.data()))
       .filter((pair): pair is PairEntity => {
         if (!pair) return false;
-        if (pair.expires_at !== undefined && pair.expires_at <= now) return false;
+        if (pair.expires_at !== undefined && isoToMs(pair.expires_at) <= now) return false;
         return true;
       })
-      .sort((a, b) => a.created_at - b.created_at);
+      .sort((a, b) => isoToMs(a.created_at) - isoToMs(b.created_at));
   }
 
   public async setPairActive(pairId: string, isActive: boolean, senderDeviceId: string): Promise<boolean> {
@@ -208,7 +204,7 @@ export class SessionService {
     if (pair.sender_device_id !== senderDeviceId) return false;
 
     pair.is_active = isActive;
-    pair.last_active_at = nowSeconds();
+    pair.last_active_at = nowIso();
     await this.savePair(pair);
     return true;
   }
@@ -224,15 +220,16 @@ export class SessionService {
     const pair = pairFromDocument(doc.id, doc.data());
     if (!pair) return null;
 
-    const now = nowSeconds();
+    const now = nowMs();
     const isConfirmed = Boolean(pair.receiver_device_id);
-    if (isConfirmed && pair.expires_at !== undefined && pair.expires_at <= now) {
+    if (isConfirmed && pair.expires_at !== undefined && isoToMs(pair.expires_at) <= now) {
       await docRef.delete();
       return null;
     }
 
-    pair.last_active_at = now;
-    await docRef.update({ last_active_at: now });
+    const lastActive = nowIso();
+    pair.last_active_at = lastActive;
+    await docRef.update({ last_active_at: lastActive });
     return pair;
   }
 
@@ -240,11 +237,11 @@ export class SessionService {
     const pair = await this.rawGetPair(pairId);
     if (!pair) return null;
 
-    const now = nowSeconds();
+    const now = nowMs();
     pair.pairing_code_hash = codeHash;
-    pair.pairing_code_expires_at = now + PAIRING_CODE_TTL_SECONDS;
+    pair.pairing_code_expires_at = msToIso(now + PAIRING_CODE_TTL_SECONDS * 1000);
     pair.pairing_attempts = 0;
-    pair.last_active_at = now;
+    pair.last_active_at = nowIso();
 
     await this.savePair(pair);
     return pair;
@@ -255,7 +252,7 @@ export class SessionService {
     if (!pair) return 0;
 
     pair.pairing_attempts += 1;
-    pair.last_active_at = nowSeconds();
+    pair.last_active_at = nowIso();
 
     if (pair.pairing_attempts >= MAX_PAIRING_ATTEMPTS) {
       // Brute-force guard: invalidate the code once the guess budget is exhausted
@@ -271,14 +268,14 @@ export class SessionService {
     const pair = await this.rawGetPair(pairId);
     if (!pair) return null;
 
-    const now = nowSeconds();
+    const now = nowMs();
     pair.receiver_device_id = params.receiver_device_id;
     pair.receiver_device_name = params.device_name;
     pair.fcm_token = params.fcm_token;
     pair.platform = params.platform;
-    pair.paired_at = now;
-    pair.expires_at = now + env.SESSION_TTL_HOURS * 3600;
-    pair.last_active_at = now;
+    pair.paired_at = nowIso();
+    pair.expires_at = msToIso(now + env.SESSION_TTL_HOURS * 3600 * 1000);
+    pair.last_active_at = nowIso();
 
     // One-time use: the code can never be redeemed again
     pair.pairing_code_hash = undefined;
@@ -321,7 +318,7 @@ export class SessionService {
       .get();
 
     await Promise.all(
-      snapshot.docs.map((doc) => doc.ref.update({ fcm_token: fcmToken, last_active_at: nowSeconds() }))
+      snapshot.docs.map((doc) => doc.ref.update({ fcm_token: fcmToken, last_active_at: nowIso() }))
     );
   }
 
@@ -340,8 +337,8 @@ export class SessionService {
     const doc = await db.collection(MESSAGES_COLLECTION).doc(messageId).get();
     if (!doc.exists) return false;
 
-    const relayedAt = Number(doc.data()?.relayed_at ?? 0);
-    if (nowSeconds() - relayedAt > MESSAGE_DEDUP_TTL_SECONDS) {
+    const relayedAtMs = isoToMs(toIsoString(doc.data()?.relayed_at));
+    if (nowMs() - relayedAtMs > MESSAGE_DEDUP_TTL_SECONDS * 1000) {
       return false;
     }
     return true;
@@ -351,7 +348,7 @@ export class SessionService {
     const db = getFirestoreDb();
     if (!db) return;
 
-    const now = nowSeconds();
+    const sentMs = isoToMs(message.sent_at);
     const ttlSeconds = message.ttl_seconds ?? PENDING_MESSAGE_TTL_SECONDS;
 
     const docData: Record<string, unknown> = {
@@ -360,10 +357,9 @@ export class SessionService {
       encrypted_payload: message.encrypted_payload,
       iv: message.iv,
       sent_at: message.sent_at,
-      relayed_at: now,
-      date: toDateString(now),
+      relayed_at: nowIso(),
       status: 'PENDING',
-      expire_at: message.sent_at + ttlSeconds,
+      expire_at: msToIso(sentMs + ttlSeconds * 1000),
       ttl_seconds: message.ttl_seconds
     };
 
@@ -374,7 +370,7 @@ export class SessionService {
     const db = getFirestoreDb();
     if (!db) return [];
 
-    const now = nowSeconds();
+    const now = nowMs();
     const snapshot = await db
       .collection(MESSAGES_COLLECTION)
       .where('pair_id', '==', pairId)
@@ -389,32 +385,34 @@ export class SessionService {
       if (!entity) continue;
 
       // Expired pending messages are dropped from the queue (history is kept)
-      if (now - entity.sent_at > PENDING_MESSAGE_TTL_SECONDS) continue;
+      if (now - isoToMs(entity.sent_at) > PENDING_MESSAGE_TTL_SECONDS * 1000) continue;
 
       alive.push({
         message_id: entity.message_id,
         encrypted_payload: entity.encrypted_payload,
         iv: entity.iv,
         sent_at: entity.sent_at,
-        ttl_seconds: entity.ttl_seconds ?? Math.max(0, (entity.expire_at ?? entity.sent_at) - entity.sent_at)
+        ttl_seconds:
+          entity.ttl_seconds ??
+          Math.max(0, Math.round((isoToMs(entity.expire_at ?? entity.sent_at) - isoToMs(entity.sent_at)) / 1000))
       });
       markFetched.push(doc.ref.update({ status: 'SUCCESS' as MessageStatus }));
     }
 
     await Promise.all(markFetched);
-    return alive.sort((a, b) => a.sent_at - b.sent_at);
+    return alive.sort((a, b) => isoToMs(a.sent_at) - isoToMs(b.sent_at));
   }
 
   public async cleanExpiredSessions(): Promise<number> {
     const db = getFirestoreDb();
     if (!db) return 0;
 
-    const now = nowSeconds();
     let removedCount = 0;
 
     try {
-      // Expired confirmed pairs (expires_at is only set after confirmation)
-      const expired = await db.collection(PAIRS_COLLECTION).where('expires_at', '<=', now).get();
+      // Expired confirmed pairs (expires_at is only set after confirmation);
+      // ISO 8601 UTC strings compare chronologically as plain strings
+      const expired = await db.collection(PAIRS_COLLECTION).where('expires_at', '<=', nowIso()).get();
       for (const doc of expired.docs) {
         await doc.ref.delete();
         removedCount++;
@@ -423,7 +421,7 @@ export class SessionService {
       // Stale pending pairs: never confirmed within 1 hour
       const stale = await db
         .collection(PAIRS_COLLECTION)
-        .where('created_at', '<', now - STALE_PENDING_PAIR_SECONDS)
+        .where('created_at', '<', msToIso(nowMs() - STALE_PENDING_PAIR_SECONDS * 1000))
         .get();
       for (const doc of stale.docs) {
         const pair = pairFromDocument(doc.id, doc.data());
@@ -456,7 +454,6 @@ export class SessionService {
       iv: record.iv,
       sent_at: record.sent_at,
       relayed_at: record.relayed_at,
-      date: toDateString(record.relayed_at),
       // PENDING = waiting in the polling queue; flipped to SUCCESS when fetched
       status: 'PENDING' as MessageStatus
     };
@@ -469,36 +466,24 @@ export class SessionService {
   }
 
   public async getRelayHistory(options: {
-    date?: string;
+    fromMs: number;
+    toMs: number;
     pairId?: string;
     participantDeviceId?: string;
   }): Promise<RelayHistoryRecord[]> {
     const db = getFirestoreDb();
     if (!db) return [];
 
-    let startTimestamp = 0;
-    let endTimestamp = Number.MAX_SAFE_INTEGER;
-
-    if (options.date) {
-      // Parse YYYY-MM-DD
-      const dateParts = options.date.split('-');
-      if (dateParts.length === 3) {
-        const year = parseInt(dateParts[0], 10);
-        const month = parseInt(dateParts[1], 10) - 1;
-        const day = parseInt(dateParts[2], 10);
-        const start = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
-        const end = new Date(Date.UTC(year, month, day, 23, 59, 59, 999));
-        startTimestamp = Math.floor(start.getTime() / 1000);
-        endTimestamp = Math.floor(end.getTime() / 1000);
-      }
-    }
-    const hasDateFilter = startTimestamp > 0 || endTimestamp !== Number.MAX_SAFE_INTEGER;
+    const fromIso = msToIso(options.fromMs);
+    const toIso = msToIso(options.toMs);
 
     let query: admin.firestore.Query = db.collection(MESSAGES_COLLECTION);
     if (options.pairId) {
       query = query.where('pair_id', '==', options.pairId);
-    } else if (hasDateFilter && options.date) {
-      query = query.where('date', '==', options.date);
+    } else {
+      // ISO 8601 UTC strings compare chronologically as plain strings,
+      // so a range filter works both on the mock and on real Firestore
+      query = query.where('relayed_at', '>=', fromIso).where('relayed_at', '<=', toIso);
     }
 
     const snapshot = await query.get();
@@ -519,8 +504,9 @@ export class SessionService {
 
     const records = entities
       .filter((entity) => {
-        // Check date range
-        if (entity.relayed_at < startTimestamp || entity.relayed_at > endTimestamp) {
+        const relayedAtMs = isoToMs(entity.relayed_at);
+        // Check [from, to] range
+        if (relayedAtMs < options.fromMs || relayedAtMs > options.toMs) {
           return false;
         }
         // Check pairId filter if provided
@@ -538,8 +524,8 @@ export class SessionService {
       })
       .map((entity) => toHistoryRecord(entity));
 
-    // Newest first (matches the previous unshift-based ordering)
-    return records.sort((a, b) => b.relayed_at - a.relayed_at);
+    // Newest first
+    return records.sort((a, b) => isoToMs(b.relayed_at) - isoToMs(a.relayed_at));
   }
 
   public async count(): Promise<number> {

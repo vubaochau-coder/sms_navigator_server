@@ -24,6 +24,11 @@ describe('SMS Navigator Server Integration Tests', () => {
 
   const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
+  const expectIso8601 = (value: string) => {
+    expect(typeof value).toBe('string');
+    expect(new Date(value).toISOString()).toBe(value);
+  };
+
   const registerDevice = async (deviceId?: string): Promise<{ deviceId: string; token: string }> => {
     const res = await request(server)
       .post('/api/v1/devices/register')
@@ -93,7 +98,9 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.device_id).toBe('device_A_register');
       expect(res.body.token).toMatch(/^[a-f0-9]{64}$/);
       expect(res.body.token_type).toBe('Bearer');
-      expect(res.body.created_at).toBeLessThanOrEqual(nowSeconds());
+      expect(res.body.created_at).toBeDefined();
+      expectIso8601(res.body.created_at);
+      expect(new Date(res.body.created_at).getTime()).toBeLessThanOrEqual(Date.now());
     });
 
     it('should auto-generate a unique device_id when not provided', async () => {
@@ -222,7 +229,8 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.pair_id).toBe('pair_init_001');
       expect(res.body.pairing_code).toMatch(/^\d{6}$/);
-      expect(res.body.expires_at).toBeGreaterThanOrEqual(nowSeconds() + 590);
+      expectIso8601(res.body.expires_at);
+      expect(new Date(res.body.expires_at).getTime()).toBeGreaterThanOrEqual(nowSeconds() * 1000 + 590_000);
 
       const pair = await sessionService.getPair('pair_init_001');
       expect(pair?.sender_device_id).toBe('device_A_init');
@@ -375,7 +383,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       const { b, code } = await createPendingPair('pair_expired_code');
 
       const pair = (await sessionService.getPair('pair_expired_code'))!;
-      pair.pairing_code_expires_at = nowSeconds() - 10;
+      pair.pairing_code_expires_at = new Date(Date.now() - 10_000).toISOString();
       await sessionService.savePair(pair);
 
       const res = await request(server)
@@ -404,8 +412,8 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.pair_id).toBe('pair_confirm_ok');
-      expect(res.body.paired_at).toBeLessThanOrEqual(nowSeconds());
-      expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
+      expectIso8601(res.body.paired_at);
+      expect(new Date(res.body.expires_at).getTime()).toBeGreaterThan(nowSeconds() * 1000);
 
       const pair = await sessionService.getPair('pair_confirm_ok');
       expect(pair?.receiver_device_id).toBe(`B_pair_confirm_ok`);
@@ -444,8 +452,8 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.pair_id).toBe('pair_qr_flow');
-      expect(res.body.paired_at).toBeLessThanOrEqual(nowSeconds());
-      expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
+      expectIso8601(res.body.paired_at);
+      expect(new Date(res.body.expires_at).getTime()).toBeGreaterThan(nowSeconds() * 1000);
 
       const pair = await sessionService.getPair('pair_qr_flow');
       expect(pair?.receiver_device_id).toBe('B_pair_qr_flow');
@@ -517,7 +525,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.is_paired).toBe(true);
       expect(res.body.receiver_device_id).toBe(`B_pair_status_paired`);
       expect(res.body.device_name).toBe('Receiver Phone');
-      expect(res.body.expires_at).toBeGreaterThan(nowSeconds());
+      expect(new Date(res.body.expires_at).getTime()).toBeGreaterThan(nowSeconds() * 1000);
     });
 
     it('should return 403 Forbidden for Device C (not a participant)', async () => {
@@ -668,7 +676,52 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.message_id).toBe('msg_from_sender_1');
       expect(res.body.duplicate).toBeUndefined();
-      expect(res.body.relayed_at).toBeLessThanOrEqual(nowSeconds());
+      expectIso8601(res.body.relayed_at);
+      expect(new Date(res.body.relayed_at).getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('should accept sent_at as ISO 8601 string, epoch seconds or epoch milliseconds', async () => {
+      const { a, pairId } = await createPairedPair('pair_relay_time_formats');
+
+      const iso = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send({ ...relayBody(pairId, 'msg_time_iso'), sent_at: new Date().toISOString() });
+      expect(iso.status).toBe(200);
+
+      const seconds = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send({ ...relayBody(pairId, 'msg_time_seconds'), sent_at: nowSeconds() });
+      expect(seconds.status).toBe(200);
+
+      const millis = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send({ ...relayBody(pairId, 'msg_time_millis'), sent_at: Date.now() });
+      expect(millis.status).toBe(200);
+
+      const pending = await request(server)
+        .get(`/api/v1/relay/pending/${pairId}`)
+        .set(bearer(a.token));
+      expect(pending.status).toBe(200);
+      const sentAts = pending.body.messages as any[];
+      expect(sentAts).toHaveLength(3);
+      for (const message of sentAts) {
+        expectIso8601(message.sent_at);
+      }
+    });
+
+    it('should return 400 when sent_at is not a valid timestamp', async () => {
+      const { a, pairId } = await createPairedPair('pair_relay_time_invalid');
+
+      const res = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send({ ...relayBody(pairId, 'msg_time_bad'), sent_at: 'not-a-timestamp' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
     });
 
     it('should ignore duplicate message_id within the 10 minute window', async () => {
@@ -793,7 +846,8 @@ describe('SMS Navigator Server Integration Tests', () => {
       for (const message of fetch1.body.messages) {
         expect(message.encrypted_payload).toBe(`encrypted_${message.message_id}==`);
         expect(message.iv).toBe('aXZfc2FsdF8xMmJ5dGVz');
-        expect(message.sent_at).toBeLessThanOrEqual(nowSeconds());
+        expectIso8601(message.sent_at);
+        expect(new Date(message.sent_at).getTime()).toBeLessThanOrEqual(Date.now());
         expect(message.ttl_seconds).toBe(300);
       }
 
@@ -834,17 +888,15 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.body.count).toBe(1);
     });
 
-    describe('GET /api/v1/relay/history (OTP History by Day)', () => {
+    describe('GET /api/v1/relay/history (ISO 8601 range + timezone aware)', () => {
       it('should return 401 without auth', async () => {
         const res = await request(server).get('/api/v1/relay/history');
         expect(res.status).toBe(401);
       });
 
-      it('should return OTP records filtered by date and pairId', async () => {
+      it('should return OTP records filtered by ISO from/to range and pairId', async () => {
         const { a, b, pairId } = await createPairedPair('pair_history_test');
-        const todayStr = new Date().toISOString().split('T')[0];
 
-        // Relay 2 messages
         await request(server)
           .post('/api/v1/relay')
           .set(bearer(a.token))
@@ -854,20 +906,118 @@ describe('SMS Navigator Server Integration Tests', () => {
           .set(bearer(a.token))
           .send(relayBody(pairId, 'hist_msg_002'));
 
-        // Fetch history as Device B (receiver)
+        const from = new Date(Date.now() - 3600_000).toISOString();
+        const to = new Date(Date.now() + 3600_000).toISOString();
+
         const res = await request(server)
-          .get(`/api/v1/relay/history?date=${todayStr}&pair_id=${pairId}`)
+          .get(`/api/v1/relay/history?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pair_id=${pairId}`)
           .set(bearer(b.token));
 
         expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
-        expect(res.body.date).toBe(todayStr);
+        expect(res.body.from).toBe(from);
+        expect(res.body.to).toBe(to);
         expect(res.body.count).toBeGreaterThanOrEqual(2);
         expect(res.body.records).toBeDefined();
+
+        for (const record of res.body.records as any[]) {
+          expectIso8601(record.sent_at);
+          expectIso8601(record.relayed_at);
+        }
 
         const ids = res.body.records.map((r: any) => r.message_id);
         expect(ids).toContain('hist_msg_001');
         expect(ids).toContain('hist_msg_002');
+      });
+
+      it('should default to the current UTC day when no range is provided', async () => {
+        const { a, pairId } = await createPairedPair('pair_history_default');
+
+        await request(server)
+          .post('/api/v1/relay')
+          .set(bearer(a.token))
+          .send(relayBody(pairId, 'hist_default_001'));
+
+        const res = await request(server)
+          .get(`/api/v1/relay/history?pair_id=${pairId}`)
+          .set(bearer(a.token));
+
+        expect(res.status).toBe(200);
+        const fromMs = new Date(res.body.from).getTime();
+        const toMs = new Date(res.body.to).getTime();
+        expectIso8601(res.body.from);
+        expectIso8601(res.body.to);
+        expect(toMs - fromMs).toBe(24 * 3600_000 - 1);
+        expect(fromMs).toBeLessThanOrEqual(Date.now());
+        expect(res.body.count).toBe(1);
+      });
+
+      it('should honor tz=+07:00 so the Vietnam day is not shifted (UTC+7)', async () => {
+        const { a, pairId } = await createPairedPair('pair_history_vn_tz');
+
+        await request(server)
+          .post('/api/v1/relay')
+          .set(bearer(a.token))
+          .send(relayBody(pairId, 'hist_vn_001'));
+
+        // "Today" in Vietnam (UTC+7) may differ from the UTC calendar date
+        const vnDateStr = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+
+        const res = await request(server)
+          .get(`/api/v1/relay/history?date=${vnDateStr}&tz=%2B07%3A00&pair_id=${pairId}`)
+          .set(bearer(a.token));
+
+        expect(res.status).toBe(200);
+        // from = Vietnam midnight converted back to UTC: T00:00+07:00 == T17:00Z of the previous UTC day
+        expectIso8601(res.body.from);
+        const fromMs = new Date(`${vnDateStr}T00:00:00+07:00`).getTime();
+        expect(new Date(res.body.from).getTime()).toBe(fromMs);
+        expect(new Date(res.body.to).getTime()).toBe(fromMs + 24 * 3600_000 - 1);
+        expect(res.body.count).toBe(1);
+        expect(res.body.records[0].message_id).toBe('hist_vn_001');
+      });
+
+      it('should accept tz as plain minutes (420 == +07:00)', async () => {
+        const { a, pairId } = await createPairedPair('pair_history_tz_minutes');
+        const vnDateStr = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+
+        const res = await request(server)
+          .get(`/api/v1/relay/history?date=${vnDateStr}&tz=420&pair_id=${pairId}`)
+          .set(bearer(a.token));
+
+        expect(res.status).toBe(200);
+        const fromMs = new Date(`${vnDateStr}T00:00:00+07:00`).getTime();
+        expect(new Date(res.body.from).getTime()).toBe(fromMs);
+      });
+
+      it('should return 400 for invalid from/to/tz params', async () => {
+        const { a } = await createPairedPair('pair_history_invalid');
+        const auth = bearer(a.token);
+
+        const onlyFrom = await request(server)
+          .get('/api/v1/relay/history?from=2026-09-30T00:00:00Z')
+          .set(auth);
+        expect(onlyFrom.status).toBe(400);
+
+        const badFrom = await request(server)
+          .get('/api/v1/relay/history?from=not-a-date&to=2026-09-30T00:00:00Z')
+          .set(auth);
+        expect(badFrom.status).toBe(400);
+
+        const inverted = await request(server)
+          .get('/api/v1/relay/history?from=2026-09-30T10:00:00Z&to=2026-09-30T09:00:00Z')
+          .set(auth);
+        expect(inverted.status).toBe(400);
+
+        const badTz = await request(server)
+          .get('/api/v1/relay/history?date=2026-09-30&tz=%2B99%3A99')
+          .set(auth);
+        expect(badTz.status).toBe(400);
+
+        const badDate = await request(server)
+          .get('/api/v1/relay/history?date=30-09-2026')
+          .set(auth);
+        expect(badDate.status).toBe(400);
       });
     });
   });

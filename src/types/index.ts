@@ -4,8 +4,8 @@ export interface DeviceEntity {
   device_name?: string;
   platform?: string;
   fcm_token?: string;
-  created_at: number; // Unix timestamp in seconds
-  last_active_at: number; // Unix timestamp in seconds
+  created_at: string; // ISO 8601 UTC
+  last_active_at: string; // ISO 8601 UTC
 }
 
 export interface PairEntity {
@@ -16,21 +16,21 @@ export interface PairEntity {
   receiver_device_name?: string; // Device B name for Sender UI display
   is_active: boolean; // Sender toggle: true = active relay, false = paused by sender
   pairing_code_hash?: string; // SHA-256 hex digest of the 6-digit code
-  pairing_code_expires_at?: number; // Unix timestamp in seconds (10 minutes TTL)
+  pairing_code_expires_at?: string; // ISO 8601 UTC (10 minutes TTL)
   pairing_attempts: number; // max 5 failed attempts before the code is invalidated
   fcm_token?: string; // receiver FCM token registered at confirm time
   platform?: string; // receiver platform
-  created_at: number; // Unix timestamp in seconds
-  paired_at?: number; // Unix timestamp in seconds
-  expires_at?: number; // Unix timestamp in seconds
-  last_active_at: number; // Unix timestamp in seconds
+  created_at: string; // ISO 8601 UTC
+  paired_at?: string; // ISO 8601 UTC
+  expires_at?: string; // ISO 8601 UTC
+  last_active_at: string; // ISO 8601 UTC
 }
 
 export type MessageStatus = 'PENDING' | 'SUCCESS' | 'FAILED';
 
 /**
  * Document model of the `messages` collection (doc ID = message_id).
- * Serves both the polling queue (status PENDING) and the per-day relay history.
+ * Serves both the polling queue (status PENDING) and the per-range relay history.
  */
 export interface MessageEntity {
   message_id: string;
@@ -39,13 +39,32 @@ export interface MessageEntity {
   receiver_device_ids?: string[];
   encrypted_payload: string;
   iv: string;
-  sent_at: number; // Unix timestamp in seconds
-  relayed_at: number; // Unix timestamp in seconds
-  date: string; // YYYY-MM-DD (relayed_at date, used for history queries)
+  sent_at: string; // ISO 8601 UTC
+  relayed_at: string; // ISO 8601 UTC
   status: MessageStatus; // PENDING = waiting in polling queue, SUCCESS = fetched/pushed
-  expire_at?: number; // Unix timestamp in seconds (sent_at + ttl)
+  expire_at?: string; // ISO 8601 UTC (sent_at + ttl)
   sender_device_name?: string; // for RelayHistoryRecord contract
   ttl_seconds?: number; // original payload TTL from the sender
+}
+
+export interface PairedReceiverItem {
+  pair_id: string;
+  receiver_device_id: string;
+  device_name: string;
+  platform: string;
+  paired_at: string; // ISO 8601 UTC
+  last_active_at: string; // ISO 8601 UTC
+  is_active: boolean;
+}
+
+export interface PairedSenderItem {
+  pair_id: string;
+  sender_device_id: string;
+  device_name: string;
+  platform: string;
+  paired_at: string; // ISO 8601 UTC
+  last_active_at: string; // ISO 8601 UTC
+  is_active: boolean; // Read-only for receiver: indicates if sender has active relay or paused it
 }
 
 declare global {
@@ -78,7 +97,7 @@ export interface PendingRelayMessage {
   message_id: string;
   encrypted_payload: string;
   iv: string;
-  sent_at: number;
+  sent_at: string; // ISO 8601 UTC
   ttl_seconds: number;
 }
 
@@ -89,9 +108,9 @@ export interface PairStatusResponse {
   receiver_device_id?: string;
   device_name?: string;
   platform?: string;
-  paired_at?: number;
-  expires_at?: number;
-  pairing_code_expires_at?: number;
+  paired_at?: string; // ISO 8601 UTC
+  expires_at?: string; // ISO 8601 UTC
+  pairing_code_expires_at?: string; // ISO 8601 UTC
   pairing_code_expired?: boolean;
   pairing_attempts_remaining?: number;
   is_active?: boolean;
@@ -102,8 +121,8 @@ export interface RelayPayloadRequest {
   message_id?: string;
   encrypted_payload: string;
   iv: string;
-  sent_at: number; // Unix timestamp in seconds
-  ttl_seconds: number; // injected by relayPayloadSchema default when omitted
+  sent_at: string; // ISO 8601 UTC (normalized from ISO string / epoch seconds / epoch ms)
+  ttl_seconds: number;
 }
 
 export interface RelayPayloadResponse {
@@ -111,7 +130,7 @@ export interface RelayPayloadResponse {
   message: string;
   message_id?: string;
   duplicate?: boolean;
-  relayed_at: number;
+  relayed_at: string; // ISO 8601 UTC
 }
 
 export interface RelayHistoryRecord {
@@ -121,9 +140,8 @@ export interface RelayHistoryRecord {
   sender_device_name?: string;
   encrypted_payload: string;
   iv: string;
-  sent_at: number; // Unix timestamp in seconds
-  relayed_at: number; // Unix timestamp in seconds
+  sent_at: string; // ISO 8601 UTC
+  relayed_at: string; // ISO 8601 UTC
   status: 'SUCCESS' | 'QUEUED' | 'FAILED';
   message_id?: string;
 }
-

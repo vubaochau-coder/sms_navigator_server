@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { sessionService } from '../services/session.service.js';
 import { fcmService } from '../services/fcm.service.js';
 import { RelayPayloadRequest, RelayPayloadResponse } from '../types/index.js';
+import { nowIso, msToIso, isoToMs, dayRange, parseTzOffsetMinutes } from '../utils/time.js';
 
 export class RelayController {
   public static async relayOtp(req: Request, res: Response): Promise<void> {
@@ -16,14 +17,15 @@ export class RelayController {
       ttl_seconds
     }: RelayPayloadRequest = req.body;
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = Date.now();
+    const sentAtMs = isoToMs(sent_at);
 
     // 1. Verify that the OTP payload hasn't expired before reaching server
-    if (now - sent_at > ttl_seconds) {
+    if (now - sentAtMs > ttl_seconds * 1000) {
       res.status(400).json({
         success: false,
         error: 'PAYLOAD_EXPIRED',
-        message: `OTP relay payload has expired (${now - sent_at}s elapsed, max TTL is ${ttl_seconds}s)`
+        message: `OTP relay payload has expired (${Math.floor((now - sentAtMs) / 1000)}s elapsed, max TTL is ${ttl_seconds}s)`
       });
       return;
     }
@@ -77,7 +79,7 @@ export class RelayController {
         message: 'Duplicate message_id ignored (already relayed within the last 10 minutes)',
         message_id,
         duplicate: true,
-        relayed_at: now
+        relayed_at: nowIso()
       };
       res.status(200).json(response);
       return;
@@ -95,7 +97,7 @@ export class RelayController {
       ttl_seconds
     });
 
-    // Record in history for OTP logs & analytics by date
+    // Record in history for OTP logs & analytics by time range
     await sessionService.addRelayHistory({
       id: pendingMessageId,
       pair_id,
@@ -104,7 +106,7 @@ export class RelayController {
       encrypted_payload,
       iv,
       sent_at,
-      relayed_at: now,
+      relayed_at: nowIso(),
       message_id: message_id ?? pendingMessageId
     });
 
@@ -125,7 +127,7 @@ export class RelayController {
           success: true,
           message: 'OTP payload successfully forwarded to receiver via High-Priority FCM',
           message_id: message_id ?? fcmMessageId,
-          relayed_at: now
+          relayed_at: nowIso()
         };
 
         res.status(200).json(response);
@@ -154,7 +156,7 @@ export class RelayController {
       success: true,
       message: 'OTP payload queued for receiver polling (no FCM token registered)',
       message_id: pendingMessageId,
-      relayed_at: now
+      relayed_at: nowIso()
     };
     res.status(200).json(response);
   }
@@ -193,21 +195,82 @@ export class RelayController {
 
   public static async getRelayHistory(req: Request, res: Response): Promise<void> {
     const device = req.device!;
+    const fromParam = typeof req.query.from === 'string' ? req.query.from : undefined;
+    const toParam = typeof req.query.to === 'string' ? req.query.to : undefined;
     const dateParam = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const tzParam = typeof req.query.tz === 'string' ? req.query.tz : undefined;
     const pairIdParam = typeof req.query.pair_id === 'string' ? req.query.pair_id : undefined;
 
-    // Default to today (YYYY-MM-DD) if not provided
-    const targetDate = dateParam || new Date().toISOString().split('T')[0];
+    let range: { fromMs: number; toMs: number };
+
+    if (fromParam !== undefined || toParam !== undefined) {
+      if (fromParam === undefined || toParam === undefined) {
+        res.status(400).json({
+          success: false,
+          error: 'INVALID_PARAMETERS',
+          message: 'Both "from" and "to" ISO 8601 query params are required when using a range.'
+        });
+        return;
+      }
+      const fromMs = Date.parse(fromParam);
+      const toMs = Date.parse(toParam);
+      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+        res.status(400).json({
+          success: false,
+          error: 'INVALID_PARAMETERS',
+          message: '"from" and "to" must be valid ISO 8601 datetimes (e.g. 2026-09-30T00:00:00+07:00).'
+        });
+        return;
+      }
+      if (fromMs > toMs) {
+        res.status(400).json({
+          success: false,
+          error: 'INVALID_PARAMETERS',
+          message: '"from" must not be after "to".'
+        });
+        return;
+      }
+      range = { fromMs, toMs };
+    } else {
+      // Legacy day-based query: ?date=YYYY-MM-DD with optional ?tz=+07:00 | tz=<minutes>
+      // No tz (or no date) falls back to plain UTC day bounds.
+      let offsetMinutes = 0;
+      if (tzParam !== undefined) {
+        const parsed = parseTzOffsetMinutes(tzParam);
+        if (parsed === null) {
+          res.status(400).json({
+            success: false,
+            error: 'INVALID_PARAMETERS',
+            message: '"tz" must be a UTC offset like +07:00 or a minute value like 420.'
+          });
+          return;
+        }
+        offsetMinutes = parsed;
+      }
+      const targetDate = dateParam ?? new Date().toISOString().slice(0, 10);
+      const computed = dayRange(targetDate, offsetMinutes);
+      if (!computed) {
+        res.status(400).json({
+          success: false,
+          error: 'INVALID_PARAMETERS',
+          message: '"date" must be a valid YYYY-MM-DD string.'
+        });
+        return;
+      }
+      range = computed;
+    }
 
     const records = await sessionService.getRelayHistory({
-      date: targetDate,
+      fromMs: range.fromMs,
+      toMs: range.toMs,
       pairId: pairIdParam,
       participantDeviceId: device.device_id
     });
 
     res.status(200).json({
       success: true,
-      date: targetDate,
+      from: msToIso(range.fromMs),
+      to: msToIso(range.toMs),
       count: records.length,
       records
     });
