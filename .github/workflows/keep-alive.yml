@@ -1,0 +1,18 @@
+name: Keep Server Alive
+
+on:
+  schedule:
+    # Run every 10 minutes to prevent Render free tier from sleeping (15m idle limit)
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping Render Server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send keep-alive HTTP GET request
+        run: |
+          echo "Pinging SMS Navigator Server on Render..."
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" https://sms-navigator-server.onrender.com/api/v1/health)
+          echo "$RESPONSE"
