@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { sessionService } from '../services/session.service.js';
+import { deviceService } from '../services/device.service.js';
 import { PairedReceiverItem, PairedSenderItem, PairConfirmRequest, PairStatusResponse } from '../types/index.js';
 import { isoToMs } from '../utils/time.js';
 
@@ -31,7 +32,14 @@ export class PairController {
       }
     }
 
-    const pair = existing ?? (await sessionService.createPair(pairId, device.device_id));
+    const pair = existing ?? (await sessionService.createPair(pairId, device.device_id, device.device_name));
+
+    // Backfill the sender's display name for pairs created before the name
+    // was persisted (or when Device A registered its name after init).
+    if (existing && !existing.sender_device_name && device.device_name) {
+      existing.sender_device_name = device.device_name;
+      await sessionService.updatePair(existing);
+    }
 
     res.status(201).json({
       success: true,
@@ -133,20 +141,29 @@ export class PairController {
 
   /**
    * Sender view: list all receivers paired with this sender device.
+   * Pair records created before names were persisted fall back to the
+   * device registry so users always see a readable device name.
    */
   public static async getPairedReceivers(req: Request, res: Response): Promise<void> {
     const device = req.device!;
     const pairs = await sessionService.getPairsBySender(device.device_id);
 
-    const receivers: PairedReceiverItem[] = pairs.map((p) => ({
-      pair_id: p.pair_id,
-      receiver_device_id: p.receiver_device_id!,
-      device_name: p.receiver_device_name || 'Thiết bị nhận',
-      platform: p.platform || 'Android',
-      paired_at: p.paired_at ?? p.created_at,
-      last_active_at: p.last_active_at,
-      is_active: p.is_active !== false
-    }));
+    const receivers: PairedReceiverItem[] = await Promise.all(
+      pairs.map(async (p) => {
+        const fallbackDevice = !p.receiver_device_name || !p.platform
+          ? await deviceService.findByDeviceId(p.receiver_device_id!)
+          : null;
+        return {
+          pair_id: p.pair_id,
+          receiver_device_id: p.receiver_device_id!,
+          device_name: p.receiver_device_name || fallbackDevice?.device_name || 'Thiết bị nhận',
+          platform: p.platform || fallbackDevice?.platform || 'Android',
+          paired_at: p.paired_at ?? p.created_at,
+          last_active_at: p.last_active_at,
+          is_active: p.is_active !== false
+        };
+      })
+    );
 
     res.status(200).json({
       success: true,
@@ -157,21 +174,28 @@ export class PairController {
 
   /**
    * Receiver view: list all senders paired with this receiver device.
-   * Read-only connection status for receiver.
+   * Read-only connection status for receiver. The sender's name/platform
+   * come from the pair record, falling back to the device registry —
+   * NOT from the requesting device (which is the receiver itself).
    */
   public static async getPairedSenders(req: Request, res: Response): Promise<void> {
     const device = req.device!;
     const pairs = await sessionService.getPairsByReceiver(device.device_id);
 
-    const senders: PairedSenderItem[] = pairs.map((p) => ({
-      pair_id: p.pair_id,
-      sender_device_id: p.sender_device_id,
-      device_name: p.sender_device_name || 'Thiết bị gửi',
-      platform: device.platform || 'Android',
-      paired_at: p.paired_at ?? p.created_at,
-      last_active_at: p.last_active_at,
-      is_active: p.is_active !== false
-    }));
+    const senders: PairedSenderItem[] = await Promise.all(
+      pairs.map(async (p) => {
+        const senderDevice = await deviceService.findByDeviceId(p.sender_device_id);
+        return {
+          pair_id: p.pair_id,
+          sender_device_id: p.sender_device_id,
+          device_name: p.sender_device_name || senderDevice?.device_name || 'Thiết bị gửi',
+          platform: senderDevice?.platform ?? p.platform ?? 'Android',
+          paired_at: p.paired_at ?? p.created_at,
+          last_active_at: p.last_active_at,
+          is_active: p.is_active !== false
+        };
+      })
+    );
 
     res.status(200).json({
       success: true,

@@ -133,6 +133,11 @@ export class SessionService {
     await db.collection(PAIRS_COLLECTION).doc(pair.pair_id).set(pairToDocument(pair));
   }
 
+  /** Persist an already-loaded pair entity (partial updates by controllers). */
+  public async updatePair(pair: PairEntity): Promise<void> {
+    await this.savePair(pair);
+  }
+
   public async createPair(
     pairId: string,
     senderDeviceId: string,

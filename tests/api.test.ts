@@ -478,6 +478,80 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
   });
 
+  describe('paired device name resolution', () => {
+    it('should persist the sender device name at pair/init (201)', async () => {
+      const a = await request(server)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'A_name_init', device_name: 'Pixel 8 (Vietnam)', platform: 'android' });
+      const b = await request(server)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'B_name_init', device_name: 'iPhone 15 (Malaysia)', platform: 'ios' });
+
+      await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.body.token))
+        .send({ pair_id: 'pair_name_init' });
+      await request(server)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.body.token))
+        .send({ pair_id: 'pair_name_init', fcm_token: 'fcm_name_init_12345' });
+
+      const pair = await sessionService.getPair('pair_name_init');
+      expect(pair?.sender_device_name).toBe('Pixel 8 (Vietnam)');
+    });
+
+    it('GET paired-senders should show the sender registry name and platform (200)', async () => {
+      const a = await request(server)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'A_sender_meta', device_name: 'Pixel 8 (Vietnam)', platform: 'android' });
+      const b = await request(server)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'B_sender_meta', device_name: 'iPhone 15 (Malaysia)', platform: 'ios' });
+
+      await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.body.token))
+        .send({ pair_id: 'pair_sender_meta' });
+      await request(server)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.body.token))
+        .send({ pair_id: 'pair_sender_meta', fcm_token: 'fcm_sender_meta_12345' });
+
+      const res = await request(server).get('/api/v1/pair/senders').set(bearer(b.body.token));
+
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+      expect(res.body.senders[0].device_name).toBe('Pixel 8 (Vietnam)');
+      expect(res.body.senders[0].platform).toBe('android');
+    });
+
+    it('GET paired-receivers should fall back to the receiver registry name for legacy pairs (200)', async () => {
+      const a = await request(server)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'A_legacy_pair', device_name: 'Old Sender', platform: 'android' });
+      const b = await request(server)
+        .post('/api/v1/devices/register')
+        .send({ device_id: 'B_legacy_pair', device_name: 'Old Receiver Name', platform: 'ios' });
+
+      // Legacy pair: confirmed without device_name/platform (old client)
+      await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.body.token))
+        .send({ pair_id: 'pair_legacy_names' });
+      await request(server)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(b.body.token))
+        .send({ pair_id: 'pair_legacy_names', fcm_token: 'fcm_legacy_pair_12345' });
+
+      const res = await request(server).get('/api/v1/pair/receivers').set(bearer(a.body.token));
+
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+      expect(res.body.receivers[0].device_name).toBe('Old Receiver Name');
+      expect(res.body.receivers[0].platform).toBe('ios');
+    });
+  });
+
   describe('POST /api/v1/relay (Blind Relay)', () => {
     const relayBody = (pairId: string, messageId?: string) => ({
       pair_id: pairId,
