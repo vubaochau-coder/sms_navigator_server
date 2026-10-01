@@ -52,6 +52,14 @@ export class FcmService {
 
     const message: admin.messaging.Message = {
       token: fcmToken,
+      // Notification block: guarantees Android displays a system notification
+      // even when the app is backgrounded/killed and the OEM blocks spawning
+      // the background Dart isolate. Zero-knowledge: the server never has the
+      // plaintext OTP, so the text is intentionally generic.
+      notification: {
+        title: '🔐 Mã OTP mới',
+        body: 'Bạn vừa nhận một mã OTP được chuyển tiếp bảo mật. Chạm để xem.'
+      },
       data,
       android: {
         priority: 'high',
@@ -95,8 +103,21 @@ export class FcmService {
       data.relay_message_id = relayMessageId;
     }
 
+    const target = (receiverName ?? '').trim() || 'Máy Nhận';
     const message: admin.messaging.Message = {
       token: fcmToken,
+      // System notification fallback so the sender sees the ACK even when its
+      // app is backgrounded/killed and cannot run the background isolate.
+      notification:
+        status === 'QUEUED'
+          ? {
+              title: '⏳ OTP Đã Được Xếp Hàng',
+              body: `OTP đang chờ ${target} lấy qua polling.`
+            }
+          : {
+              title: '✅ Chuyển Tiếp OTP Thành Công',
+              body: `Đã gửi thành công OTP tới ${target} qua kênh E2EE.`
+            },
       data,
       android: {
         priority: 'high',
