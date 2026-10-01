@@ -194,17 +194,6 @@ export class SessionService {
       .sort((a, b) => isoToMs(a.created_at) - isoToMs(b.created_at));
   }
 
-  public async setPairActive(pairId: string, isActive: boolean, senderDeviceId: string): Promise<boolean> {
-    const pair = await this.getPair(pairId);
-    if (!pair) return false;
-    if (pair.sender_device_id !== senderDeviceId) return false;
-
-    pair.is_active = isActive;
-    pair.last_active_at = nowIso();
-    await this.savePair(pair);
-    return true;
-  }
-
   public async getPair(pairId: string): Promise<PairEntity | null> {
     const db = getFirestoreDb();
     if (!db) return null;

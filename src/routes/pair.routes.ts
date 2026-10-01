@@ -22,7 +22,4 @@ router.get('/receivers', authenticate, PairController.getPairedReceivers);
 // Receiver view: list all senders paired with this receiver (read-only active status)
 router.get('/senders', authenticate, PairController.getPairedSenders);
 
-// Sender toggle: enable/pause relaying to a specific pair
-router.patch('/:pairId/toggle', authenticate, validateParams(pairIdParamSchema), PairController.togglePairActive);
-
 export const pairRoutes = router;

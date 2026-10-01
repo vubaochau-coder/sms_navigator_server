@@ -170,7 +170,7 @@ export class PairController {
       platform: device.platform || 'Android',
       paired_at: p.paired_at ?? p.created_at,
       last_active_at: p.last_active_at,
-      is_active: p.is_active !== false // Indicates whether sender has enabled or paused relay
+      is_active: p.is_active !== false
     }));
 
     res.status(200).json({
@@ -179,50 +179,5 @@ export class PairController {
       senders
     });
   }
-
-  /**
-   * Sender toggle: enable or pause relaying to a specific paired receiver.
-   */
-  public static async togglePairActive(req: Request, res: Response): Promise<void> {
-    const device = req.device!;
-    const pairId = String(req.params.pairId);
-    const { is_active } = req.body as { is_active?: boolean };
-
-    if (typeof is_active !== 'boolean') {
-      res.status(400).json({
-        success: false,
-        error: 'INVALID_INPUT',
-        message: 'Field "is_active" must be a boolean.'
-      });
-      return;
-    }
-
-    const pair = await sessionService.getPair(pairId);
-    if (!pair) {
-      res.status(404).json({
-        success: false,
-        error: 'PAIR_NOT_FOUND',
-        message: `No pairing session found for pair_id: ${pairId}`
-      });
-      return;
-    }
-
-    if (pair.sender_device_id !== device.device_id) {
-      res.status(403).json({
-        success: false,
-        error: 'FORBIDDEN',
-        message: 'Only the sender device that created this pair can toggle active status.'
-      });
-      return;
-    }
-
-    await sessionService.setPairActive(pairId, is_active, device.device_id);
-
-    res.status(200).json({
-      success: true,
-      message: is_active ? 'Đã bật chuyển tiếp cho thiết bị này' : 'Đã tạm dừng chuyển tiếp cho thiết bị này',
-      pair_id: pairId,
-      is_active
-    });
-  }
 }
+

@@ -1034,8 +1034,8 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
   });
 
-  describe('Paired Devices & Active Toggle Management', () => {
-    it('should list paired receivers for sender and allow sender to toggle is_active', async () => {
+  describe('Paired Devices Management', () => {
+    it('should list paired receivers for sender and paired senders for receiver', async () => {
       const { a, b, pairId } = await createPairedPair('pair_toggle_mgmt_01');
 
       // 1. Sender lists paired receivers
@@ -1057,63 +1057,6 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(listSenders1.body.senders[0].pair_id).toBe(pairId);
       expect(listSenders1.body.senders[0].sender_device_id).toBe(a.deviceId);
       expect(listSenders1.body.senders[0].is_active).toBe(true);
-
-      // 3. Sender toggles is_active to false (paused)
-      const toggleRes = await request(server)
-        .patch(`/api/v1/pair/${pairId}/toggle`)
-        .set(bearer(a.token))
-        .send({ is_active: false });
-      expect(toggleRes.status).toBe(200);
-      expect(toggleRes.body.success).toBe(true);
-      expect(toggleRes.body.is_active).toBe(false);
-
-      // 4. Relay attempt when paused should return 403 RELAY_PAUSED_BY_SENDER
-      const relayPaused = await request(server)
-        .post('/api/v1/relay')
-        .set(bearer(a.token))
-        .send({
-          pair_id: pairId,
-          message_id: 'msg_paused_01',
-          encrypted_payload: 'paused_payload==',
-          iv: 'aXZfc2FsdF8xMmJ5dGVz',
-          sent_at: nowSeconds()
-        });
-      expect(relayPaused.status).toBe(403);
-      expect(relayPaused.body.error).toBe('RELAY_PAUSED_BY_SENDER');
-
-      // 5. Receiver checks list, should see is_active = false
-      const listSenders2 = await request(server)
-        .get('/api/v1/pair/senders')
-        .set(bearer(b.token));
-      expect(listSenders2.status).toBe(200);
-      expect(listSenders2.body.senders[0].is_active).toBe(false);
-
-      // 6. Receiver tries to toggle -> should fail with 403 FORBIDDEN
-      const receiverToggle = await request(server)
-        .patch(`/api/v1/pair/${pairId}/toggle`)
-        .set(bearer(b.token))
-        .send({ is_active: true });
-      expect(receiverToggle.status).toBe(403);
-      expect(receiverToggle.body.error).toBe('FORBIDDEN');
-
-      // 7. Sender re-enables is_active -> relay should work again
-      await request(server)
-        .patch(`/api/v1/pair/${pairId}/toggle`)
-        .set(bearer(a.token))
-        .send({ is_active: true });
-
-      const relayResumed = await request(server)
-        .post('/api/v1/relay')
-        .set(bearer(a.token))
-        .send({
-          pair_id: pairId,
-          message_id: 'msg_resumed_01',
-          encrypted_payload: 'resumed_payload==',
-          iv: 'aXZfc2FsdF8xMmJ5dGVz',
-          sent_at: nowSeconds()
-        });
-      expect(relayResumed.status).toBe(200);
-      expect(relayResumed.body.success).toBe(true);
     });
   });
 });
