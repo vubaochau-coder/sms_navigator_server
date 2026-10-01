@@ -41,6 +41,7 @@ export interface MessageEntity {
   status: MessageStatus; // PENDING = waiting in polling queue, SUCCESS = fetched/pushed
   expire_at?: string; // ISO 8601 UTC (sent_at + ttl)
   sender_device_name?: string; // for RelayHistoryRecord contract
+  receiver_device_name?: string; // for RelayHistoryRecord contract
   ttl_seconds?: number; // original payload TTL from the sender
 }
 
@@ -126,15 +127,19 @@ export interface RelayPayloadResponse {
   relayed_at: string; // ISO 8601 UTC
 }
 
+export type HistoryViewerRole = 'SENDER' | 'RECEIVER';
+
 export interface RelayHistoryRecord {
   id: string;
   pair_id: string;
   sender_device_id: string;
   sender_device_name?: string;
+  receiver_device_name?: string;
   encrypted_payload: string;
   iv: string;
   sent_at: string; // ISO 8601 UTC
   relayed_at: string; // ISO 8601 UTC
   status: 'SUCCESS' | 'QUEUED' | 'FAILED';
   message_id?: string;
+  viewer_role?: HistoryViewerRole;
 }

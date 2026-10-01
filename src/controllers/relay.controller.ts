@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { sessionService } from '../services/session.service.js';
 import { fcmService } from '../services/fcm.service.js';
-import { RelayPayloadRequest, RelayPayloadResponse } from '../types/index.js';
+import { RelayHistoryRecord, RelayPayloadRequest, RelayPayloadResponse } from '../types/index.js';
 import { nowIso, msToIso, isoToMs, dayRange, parseTzOffsetMinutes } from '../utils/time.js';
 
 // Device clocks drift: accept payloads stamped up to 2 minutes in the
@@ -139,6 +139,10 @@ export class RelayController {
           relayMessageId: message_id
         });
 
+        // Best-effort delivery confirmation push back to the sender device.
+        // Failures here must never affect the relay response.
+        await RelayController.sendRelayAck(device, pair, pendingMessageId, 'DELIVERED');
+
         const response: RelayPayloadResponse = {
           success: true,
           message: 'OTP payload successfully forwarded to receiver via High-Priority FCM',
@@ -168,6 +172,8 @@ export class RelayController {
     }
 
     // No FCM token registered: the pending queue is the only delivery channel
+    await RelayController.sendRelayAck(device, pair, pendingMessageId, 'QUEUED');
+
     const response: RelayPayloadResponse = {
       success: true,
       message: 'OTP payload queued for receiver polling (no FCM token registered)',
@@ -175,6 +181,27 @@ export class RelayController {
       relayed_at: nowIso()
     };
     res.status(200).json(response);
+  }
+
+  private static async sendRelayAck(
+    device: NonNullable<Request['device']>,
+    pair: { pair_id: string; receiver_device_name?: string },
+    relayMessageId: string,
+    status: 'DELIVERED' | 'QUEUED'
+  ): Promise<void> {
+    if (!device.fcm_token) return;
+    try {
+      await fcmService.sendRelayAckMessage({
+        fcmToken: device.fcm_token,
+        pairId: pair.pair_id,
+        relayMessageId,
+        receiverName: pair.receiver_device_name,
+        status
+      });
+    } catch (error: any) {
+      // eslint-disable-next-line no-console
+      console.warn('[RelayController] Failed to send relay ACK to sender:', error?.message || error);
+    }
   }
 
   public static async getPendingMessages(req: Request, res: Response): Promise<void> {
@@ -283,12 +310,21 @@ export class RelayController {
       participantDeviceId: device.device_id
     });
 
+    // Tag each record with the requesting device's role in that pair so the
+    // client can distinguish "sent by me" vs "received by me" records.
+    const taggedRecords = records.map((record) => ({
+      ...record,
+      viewer_role: (record.sender_device_id === device.device_id
+        ? 'SENDER'
+        : 'RECEIVER') as RelayHistoryRecord['viewer_role']
+    }));
+
     res.status(200).json({
       success: true,
       from: msToIso(range.fromMs),
       to: msToIso(range.toMs),
-      count: records.length,
-      records
+      count: taggedRecords.length,
+      records: taggedRecords
     });
   }
 }

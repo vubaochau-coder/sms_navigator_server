@@ -79,6 +79,7 @@ function messageFromDocument(id: string, data: Record<string, unknown> | undefin
     status: (data.status as MessageStatus) ?? 'PENDING',
     expire_at: data.expire_at as string | undefined,
     sender_device_name: data.sender_device_name as string | undefined,
+    receiver_device_name: data.receiver_device_name as string | undefined,
     ttl_seconds: data.ttl_seconds as number | undefined
   };
 }
@@ -89,6 +90,7 @@ function toHistoryRecord(entity: MessageEntity): RelayHistoryRecord {
     pair_id: entity.pair_id,
     sender_device_id: entity.sender_device_id,
     sender_device_name: entity.sender_device_name,
+    receiver_device_name: entity.receiver_device_name,
     encrypted_payload: entity.encrypted_payload,
     iv: entity.iv,
     sent_at: entity.sent_at,
@@ -429,6 +431,9 @@ export class SessionService {
 
     if (pair?.receiver_device_id) {
       docData.receiver_device_ids = [pair.receiver_device_id];
+      if (pair.receiver_device_name) {
+        docData.receiver_device_name = pair.receiver_device_name;
+      }
     }
 
     await db.collection(MESSAGES_COLLECTION).doc(docKey).set(docData, { merge: true });
