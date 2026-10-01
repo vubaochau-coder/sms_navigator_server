@@ -478,53 +478,6 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
   });
 
-  describe('DELETE /api/v1/pair/:pairId (ownership enforced)', () => {
-    it('should return 401 without auth', async () => {
-      const res = await request(server).delete('/api/v1/pair/pair_revoke_noauth');
-      expect(res.status).toBe(401);
-    });
-
-    it('should return 404 when the pair does not exist', async () => {
-      const { token } = await registerDevice('device_revoke_unknown');
-
-      const res = await request(server).delete('/api/v1/pair/pair_unknown_revoke').set(bearer(token));
-
-      expect(res.status).toBe(404);
-      expect(res.body.error).toBe('PAIR_NOT_FOUND');
-    });
-
-    it('should return 403 Forbidden for Device C (not a participant)', async () => {
-      const { c } = await createPairedPair('pair_revoke_forbidden');
-
-      const res = await request(server).delete('/api/v1/pair/pair_revoke_forbidden').set(bearer(c.token));
-
-      expect(res.status).toBe(403);
-      expect(res.body.error).toBe('FORBIDDEN');
-      expect(await sessionService.getPair('pair_revoke_forbidden')).not.toBeNull();
-    });
-
-    it('should let Device A revoke the pair', async () => {
-      const { a } = await createPairedPair('pair_revoke_by_a');
-
-      const res = await request(server).delete('/api/v1/pair/pair_revoke_by_a').set(bearer(a.token));
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-
-      const check = await request(server)
-        .get('/api/v1/pair/status/pair_revoke_by_a')
-        .set(bearer(a.token));
-      expect(check.status).toBe(404);
-    });
-
-    it('should let Device B revoke the pair', async () => {
-      const { b } = await createPairedPair('pair_revoke_by_b');
-
-      const res = await request(server).delete('/api/v1/pair/pair_revoke_by_b').set(bearer(b.token));
-      expect(res.status).toBe(200);
-      expect(await sessionService.getPair('pair_revoke_by_b')).toBeNull();
-    });
-  });
-
   describe('POST /api/v1/relay (Blind Relay)', () => {
     const relayBody = (pairId: string, messageId?: string) => ({
       pair_id: pairId,
@@ -1078,14 +1031,6 @@ describe('SMS Navigator Server Integration Tests', () => {
           sent_at: nowSeconds()
         });
       expect(relayByReceiver.status).toBe(403);
-
-      const revoke = await request(server).delete(`/api/v1/pair/${pairId}`).set(bearer(tokenA));
-      expect(revoke.status).toBe(200);
-
-      const statusRevoked = await request(server)
-        .get(`/api/v1/pair/status/${pairId}`)
-        .set(bearer(tokenA));
-      expect(statusRevoked.status).toBe(404);
     });
   });
 

@@ -25,7 +25,4 @@ router.get('/senders', authenticate, PairController.getPairedSenders);
 // Sender toggle: enable/pause relaying to a specific pair
 router.patch('/:pairId/toggle', authenticate, validateParams(pairIdParamSchema), PairController.togglePairActive);
 
-// Revoke pairing (restricted to Device A / Device B of the pair)
-router.delete('/:pairId', authenticate, validateParams(pairIdParamSchema), PairController.revokePairing);
-
 export const pairRoutes = router;

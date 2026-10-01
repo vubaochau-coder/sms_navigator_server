@@ -131,37 +131,6 @@ export class PairController {
     res.status(200).json(response);
   }
 
-  public static async revokePairing(req: Request, res: Response): Promise<void> {
-    const device = req.device!;
-    const pairId = String(req.params.pairId);
-
-    const pair = await sessionService.getPair(pairId);
-    if (!pair) {
-      res.status(404).json({
-        success: false,
-        error: 'PAIR_NOT_FOUND',
-        message: `No pairing session found for pair_id: ${pairId}`
-      });
-      return;
-    }
-
-    if (!sessionService.isParticipant(pair, device.device_id)) {
-      res.status(403).json({
-        success: false,
-        error: 'FORBIDDEN',
-        message: 'Only the sender or receiver device of this pair can revoke it.'
-      });
-      return;
-    }
-
-    await sessionService.removePair(pairId);
-
-    res.status(200).json({
-      success: true,
-      message: 'Pairing session revoked successfully'
-    });
-  }
-
   /**
    * Sender view: list all receivers paired with this sender device.
    */
