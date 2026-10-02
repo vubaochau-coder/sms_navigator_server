@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { env } from './config/env.js';
 import { apiV1Routes } from './routes/api.routes.js';
+import { apiV2Routes } from './routes/v2.routes.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 
 export function createApp(): express.Application {  const app = express();
@@ -34,8 +35,11 @@ export function createApp(): express.Application {  const app = express();
   );
   app.use(express.json({ limit: '1mb' }));
 
-  // API v1 routes
+  // API v1 routes (legacy, kept until v2 migration completes)
   app.use('/api/v1', apiV1Routes);
+
+  // API v2 routes (Channel 1-to-N E2EE architecture)
+  app.use('/api/v2', apiV2Routes);
 
   // 404 Handler
   app.use((req: Request, res: Response) => {

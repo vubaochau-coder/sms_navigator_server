@@ -18,7 +18,9 @@ const envSchema = z.object({
   // CORS whitelist (GĐ4.3): danh sách origin phân tách bởi dấu phẩy.
   // Mặc định RỖNG = chặn mọi cross-origin request (client chính là app mobile,
   // không dùng CORS). Dùng '*' chỉ khi thật sự cần mở cho mọi origin.
-  CORS_ORIGIN: z.string().default('')
+  CORS_ORIGIN: z.string().default(''),
+  // Public base URL embedded in v2 QR invite payloads (srv= parameter)
+  SERVER_BASE_URL: z.string().default('http://localhost:3000')
 });
 
 export const env = envSchema.parse(process.env);

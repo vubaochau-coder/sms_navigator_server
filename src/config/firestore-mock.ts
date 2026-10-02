@@ -9,7 +9,7 @@
 export type MockFieldValue = unknown;
 export type MockDocumentData = Record<string, MockFieldValue>;
 
-export type MockWhereFilterOp = '==' | '<' | '<=';
+export type MockWhereFilterOp = '==' | '!=' | '<' | '<=' | '>' | '>=' | 'in' | 'array-contains';
 
 export interface MockSetOptions {
   merge?: boolean;
@@ -23,8 +23,19 @@ function generateAutoId(): string {
   return `mock_${Date.now().toString(36)}_${random}${autoIdCounter.toString(36)}`;
 }
 
+function isTransform(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    ('operand' in value || Boolean((value as { constructor?: { name?: string } }).constructor?.name?.includes('Increment')))
+  );
+}
+
 function deepClone<T>(value: T): T {
   if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (isTransform(value)) {
     return value;
   }
   if (Array.isArray(value)) {
@@ -45,13 +56,29 @@ export function stripUndefinedFields(data: MockDocumentData): MockDocumentData {
   const cleaned: MockDocumentData = {};
   for (const [key, value] of Object.entries(data)) {
     if (value === undefined) continue;
-    if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    if (isTransform(value)) {
+      cleaned[key] = value;
+    } else if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
       cleaned[key] = stripUndefinedFields(value as MockDocumentData);
     } else {
       cleaned[key] = value;
     }
   }
   return cleaned;
+}
+
+function applyFieldTransforms(incoming: MockDocumentData, existing: MockDocumentData): MockDocumentData {
+  const resolved: MockDocumentData = {};
+  for (const [key, value] of Object.entries(incoming)) {
+    if (isTransform(value)) {
+      const operand = Number((value as { operand: unknown }).operand);
+      const prev = Number(existing[key] ?? 0);
+      resolved[key] = (Number.isNaN(prev) ? 0 : prev) + (Number.isNaN(operand) ? 0 : operand);
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
 }
 
 // Numbers compare numerically; ISO 8601 UTC strings compare chronologically
@@ -66,14 +93,34 @@ function lessThan(actual: MockFieldValue, expected: MockFieldValue, inclusive: b
   return false;
 }
 
+function greaterThan(actual: MockFieldValue, expected: MockFieldValue, inclusive: boolean): boolean {
+  if (typeof actual === 'number' && typeof expected === 'number') {
+    return inclusive ? actual >= expected : actual > expected;
+  }
+  if (typeof actual === 'string' && typeof expected === 'string') {
+    return inclusive ? actual >= expected : actual > expected;
+  }
+  return false;
+}
+
 function matchesOp(actual: MockFieldValue, op: MockWhereFilterOp, expected: MockFieldValue): boolean {
   switch (op) {
     case '==':
       return actual === expected;
+    case '!=':
+      return actual !== expected;
     case '<':
       return lessThan(actual, expected, false);
     case '<=':
       return lessThan(actual, expected, true);
+    case '>':
+      return greaterThan(actual, expected, false);
+    case '>=':
+      return greaterThan(actual, expected, true);
+    case 'in':
+      return Array.isArray(expected) && expected.includes(actual);
+    case 'array-contains':
+      return Array.isArray(actual) && actual.includes(expected);
     default:
       return false;
   }
@@ -176,9 +223,10 @@ export class MockDocumentReference {
   }
 
   public async set(data: MockDocumentData, options?: MockSetOptions): Promise<void> {
-    const cleaned = stripUndefinedFields(deepClone(data));
+    const existing = this.store.get(this.id) ?? {};
+    const transformed = applyFieldTransforms(data, existing);
+    const cleaned = stripUndefinedFields(deepClone(transformed));
     if (options?.merge) {
-      const existing = this.store.get(this.id) ?? {};
       this.store.set(this.id, { ...existing, ...cleaned });
     } else {
       this.store.set(this.id, cleaned);
@@ -191,8 +239,9 @@ export class MockDocumentReference {
       error.code = 'not-found';
       throw error;
     }
-    const cleaned = stripUndefinedFields(deepClone(data));
     const existing = this.store.get(this.id) ?? {};
+    const transformed = applyFieldTransforms(data, existing);
+    const cleaned = stripUndefinedFields(deepClone(transformed));
     this.store.set(this.id, { ...existing, ...cleaned });
   }
 

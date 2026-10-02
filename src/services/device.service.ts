@@ -11,6 +11,7 @@ export function sha256Hex(value: string): string {
 
 export interface DeviceRegisterInput {
   device_id?: string;
+  public_key?: string;
   device_name?: string;
   platform?: string;
 }
@@ -22,6 +23,7 @@ function toDocument(device: DeviceEntity): Record<string, unknown> {
     created_at: device.created_at,
     last_active_at: device.last_active_at
   };
+  if (device.public_key !== undefined) doc.public_key = device.public_key;
   if (device.device_name !== undefined) doc.device_name = device.device_name;
   if (device.platform !== undefined) doc.platform = device.platform;
   if (device.fcm_token !== undefined) doc.fcm_token = device.fcm_token;
@@ -33,6 +35,7 @@ function fromDocument(id: string, data: Record<string, unknown> | undefined): De
   return {
     device_id: typeof data.device_id === 'string' ? data.device_id : id,
     token_hash: data.token_hash,
+    public_key: data.public_key as string | undefined,
     device_name: data.device_name as string | undefined,
     platform: data.platform as string | undefined,
     fcm_token: data.fcm_token as string | undefined,
@@ -58,8 +61,9 @@ export class DeviceService {
     const device: DeviceEntity = {
       device_id: deviceId,
       token_hash: tokenHash,
-      device_name: input.device_name,
-      platform: input.platform,
+      public_key: input.public_key ?? existing?.public_key,
+      device_name: input.device_name ?? existing?.device_name,
+      platform: input.platform ?? existing?.platform,
       fcm_token: existing?.fcm_token,
       created_at: existing?.created_at ?? now,
       last_active_at: now
@@ -91,6 +95,22 @@ export class DeviceService {
 
     const doc = await db.collection(DEVICES_COLLECTION).doc(deviceId).get();
     if (!doc.exists) return null;
+    return fromDocument(doc.id, doc.data());
+  }
+
+  /** v2 register idempotency: re-calling with the same public_key reuses the device. */
+  public async findByPublicKey(publicKey: string): Promise<DeviceEntity | null> {
+    const db = getFirestoreDb();
+    if (!db) return null;
+
+    const snapshot = await db
+      .collection(DEVICES_COLLECTION)
+      .where('public_key', '==', publicKey)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) return null;
+    const doc = snapshot.docs[0];
     return fromDocument(doc.id, doc.data());
   }
 

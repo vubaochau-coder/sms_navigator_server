@@ -138,6 +138,41 @@ export class FcmService {
       throw error;
     }
   }
+
+  public async sendDataNotification(
+    fcmToken: string,
+    data: Record<string, string>,
+    notification?: { title: string; body: string }
+  ): Promise<string> {
+    if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
+      const mockMessageId = `mock_msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      // eslint-disable-next-line no-console
+      console.log(`[FCM-Mock] Data notification (${data.type || 'UNKNOWN'}) -> token ${fcmToken.substring(0, 10)}... (msgId: ${mockMessageId})`);
+      return mockMessageId;
+    }
+
+    const message: admin.messaging.Message = {
+      token: fcmToken,
+      data,
+      android: {
+        priority: 'high',
+        ttl: 10 * 60 * 1000
+      }
+    };
+
+    if (notification) {
+      message.notification = notification;
+    }
+
+    try {
+      return await this.adminSdk.messaging().send(message);
+    } catch (error) {
+      // Best-effort notification delivery, do not crash business flow
+      // eslint-disable-next-line no-console
+      console.warn('[FCM] Warning: Failed to send data notification:', error);
+      return '';
+    }
+  }
 }
 
 export const fcmService = new FcmService();

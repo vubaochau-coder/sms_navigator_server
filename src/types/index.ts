@@ -1,6 +1,7 @@
 export interface DeviceEntity {
   device_id: string;
   token_hash: string; // SHA-256 hex digest of the raw bearer token - plaintext token is never stored
+  public_key?: string; // 32-byte X25519 public key (base64)
   device_name?: string;
   platform?: string;
   fcm_token?: string;
