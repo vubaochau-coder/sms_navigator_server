@@ -5,8 +5,7 @@ import { env } from './config/env.js';
 import { apiV1Routes } from './routes/api.routes.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 
-export function createApp(): express.Application {
-  const app = express();
+export function createApp(): express.Application {  const app = express();
 
   // Trust reverse proxy headers from Render/Cloudflare for rate limiter and client IP
   app.set('trust proxy', 1);
@@ -24,9 +23,12 @@ export function createApp(): express.Application {
 
   // Basic security and parsing
   app.use(helmet());
+  // CORS whitelist (GĐ4.3): CORS_ORIGIN rỗng (mặc định) = chặn mọi
+  // cross-origin request; '*' = mở cho mọi origin; 'a.com,b.com' = whitelist.
+  // Request không mang Origin header (app mobile, curl) không bị ảnh hưởng.
   app.use(
     cors({
-      origin: env.CORS_ORIGIN,
+      origin: parseCorsOrigins(env.CORS_ORIGIN),
       methods: ['GET', 'POST', 'DELETE', 'OPTIONS']
     })
   );
@@ -48,4 +50,15 @@ export function createApp(): express.Application {
   app.use(errorHandler);
 
   return app;
+}
+
+/** Parse CORS_ORIGIN env: '' → [] (chặn cross-origin), '*' → mọi origin, 'a,b' → whitelist. */
+function parseCorsOrigins(raw: string): string[] | boolean {
+  const origins = raw
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  if (origins.length === 0) return false;
+  if (origins.includes('*')) return true;
+  return origins;
 }

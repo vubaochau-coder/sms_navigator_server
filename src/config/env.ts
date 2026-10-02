@@ -15,7 +15,10 @@ const envSchema = z.object({
     .string()
     .transform((val) => val === 'true')
     .default('false'),
-  CORS_ORIGIN: z.string().default('*')
+  // CORS whitelist (GĐ4.3): danh sách origin phân tách bởi dấu phẩy.
+  // Mặc định RỖNG = chặn mọi cross-origin request (client chính là app mobile,
+  // không dùng CORS). Dùng '*' chỉ khi thật sự cần mở cho mọi origin.
+  CORS_ORIGIN: z.string().default('')
 });
 
 export const env = envSchema.parse(process.env);

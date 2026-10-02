@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { sessionService } from '../services/session.service.js';
 import { fcmService } from '../services/fcm.service.js';
+import { replayGuardService } from '../services/replay-guard.service.js';
 import { RelayHistoryRecord, RelayPayloadRequest, RelayPayloadResponse } from '../types/index.js';
 import { nowIso, msToIso, isoToMs, dayRange, parseTzOffsetMinutes } from '../utils/time.js';
 
@@ -78,7 +79,8 @@ export class RelayController {
     }
 
     // 5. Message deduplication (10 minutes window) - checked against the
-    //    `messages` collection by message_id
+    //    `messages` collection by message_id. Chạy TRƯỚC anti-replay để
+    //    retry hợp lệ (cùng message_id) không bị coi là replay.
     if (message_id && (await sessionService.isMessageProcessed(message_id))) {
       const response: RelayPayloadResponse = {
         success: true,
@@ -91,7 +93,19 @@ export class RelayController {
       return;
     }
 
-    // 6. Store the encrypted payload in the pending queue (5 minutes TTL)
+    // 6. Anti-replay (GĐ4.2): cùng một ciphertext (pair_id | iv | payload)
+    //    chỉ được relay một lần trong 24h — chặn gửi lại ciphertext cũ với
+    //    message_id mới để bypass dedup theo message_id.
+    if (replayGuardService.checkAndRecord(pair_id, iv, encrypted_payload)) {
+      res.status(409).json({
+        success: false,
+        error: 'REPLAY_DETECTED',
+        message: 'This OTP payload has already been relayed. Replaying the same ciphertext is not allowed.'
+      });
+      return;
+    }
+
+    // 7. Store the encrypted payload in the pending queue (5 minutes TTL)
     // so the receiver can fetch it via GET /relay/pending/:pairId even if
     // the FCM push is missed or dropped.
     const pendingMessageId = message_id ?? randomUUID();
@@ -103,7 +117,7 @@ export class RelayController {
       ttl_seconds
     });
 
-    // Record in history for OTP logs & analytics by time range
+    // 8. Record in history for OTP logs & analytics by time range
     await sessionService.addRelayHistory({
       id: pendingMessageId,
       pair_id,
@@ -116,7 +130,7 @@ export class RelayController {
       message_id: message_id ?? pendingMessageId
     });
 
-    // 7. Blind relay: forward the encrypted payload untouched via FCM High-Priority Data message
+    // 9. Blind relay: forward the encrypted payload untouched via FCM High-Priority Data message
     if (pair.fcm_token) {
       try {
         const fcmMessageId = await fcmService.sendRelayDataMessage({

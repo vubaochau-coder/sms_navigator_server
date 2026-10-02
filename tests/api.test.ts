@@ -591,11 +591,13 @@ describe('SMS Navigator Server Integration Tests', () => {
   });
 
   describe('POST /api/v1/relay (Blind Relay)', () => {
+    // IV derive từ message_id để mỗi message trong 1 pair có fingerprint
+    // (pair_id | iv | payload) riêng — không vấp anti-replay của test khác.
     const relayBody = (pairId: string, messageId?: string) => ({
       pair_id: pairId,
       ...(messageId ? { message_id: messageId } : {}),
       encrypted_payload: 'U2FsdGVkX19mock_encrypted_otp_bytes==',
-      iv: 'aXZfc2FsdF8xMmJ5dGVz',
+      iv: Buffer.from(`iv_salt_${messageId ?? 'default'}`).toString('base64'),
       sent_at: nowSeconds(),
       ttl_seconds: 300
     });
@@ -814,7 +816,7 @@ describe('SMS Navigator Server Integration Tests', () => {
           fcmToken: 'fcm_receiver_pair_relay_blind_12345',
           pairId,
           encryptedPayload: 'U2FsdGVkX19mock_encrypted_otp_bytes==',
-          iv: 'aXZfc2FsdF8xMmJ5dGVz',
+          iv: Buffer.from('iv_salt_msg_blind_1').toString('base64'),
           relayMessageId: 'msg_blind_1'
         })
       );
@@ -826,7 +828,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       pair_id: pairId,
       message_id: messageId,
       encrypted_payload: `encrypted_${messageId}==`,
-      iv: 'aXZfc2FsdF8xMmJ5dGVz',
+      iv: Buffer.from(`iv_salt_${messageId}`).toString('base64'),
       sent_at: nowSeconds(),
       ttl_seconds: 300
     });
@@ -886,7 +888,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       ]);
       for (const message of fetch1.body.messages) {
         expect(message.encrypted_payload).toBe(`encrypted_${message.message_id}==`);
-        expect(message.iv).toBe('aXZfc2FsdF8xMmJ5dGVz');
+        expect(message.iv).toBe(Buffer.from(`iv_salt_${message.message_id}`).toString('base64'));
         expectIso8601(message.sent_at);
         expect(new Date(message.sent_at).getTime()).toBeLessThanOrEqual(Date.now());
         expect(message.ttl_seconds).toBe(300);
@@ -1182,6 +1184,78 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(listSenders1.body.senders[0].pair_id).toBe(pairId);
       expect(listSenders1.body.senders[0].sender_device_id).toBe(a.deviceId);
       expect(listSenders1.body.senders[0].is_active).toBe(true);
+    });
+  });
+
+  describe('Anti-replay guard (GĐ4.2)', () => {
+    it('should return 409 REPLAY_DETECTED when the same ciphertext is replayed with a new message_id', async () => {
+      const { a, pairId } = await createPairedPair('pair_replay_detected');
+
+      const iv = Buffer.from('iv_salt_replay_case').toString('base64');
+      const first = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send({
+          pair_id: pairId,
+          message_id: 'msg_replay_first',
+          encrypted_payload: 'replay_probe_payload==',
+          iv,
+          sent_at: nowSeconds()
+        });
+      expect(first.status).toBe(200);
+
+      const replay = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a.token))
+        .send({
+          pair_id: pairId,
+          message_id: 'msg_replay_attacker_new_id',
+          encrypted_payload: 'replay_probe_payload==',
+          iv,
+          sent_at: nowSeconds()
+        });
+      expect(replay.status).toBe(409);
+      expect(replay.body.error).toBe('REPLAY_DETECTED');
+    });
+
+    it('should not treat the same ciphertext under a different pair as replay', async () => {
+      const { a: a1, pairId: pair1 } = await createPairedPair('pair_replay_pair1');
+      const { a: a2, pairId: pair2 } = await createPairedPair('pair_replay_pair2');
+
+      const body = (pairId: string) => ({
+        pair_id: pairId,
+        encrypted_payload: 'cross_pair_payload==',
+        iv: Buffer.from('iv_salt_cross_pair').toString('base64'),
+        sent_at: nowSeconds()
+      });
+
+      const first = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a1.token))
+        .send(body(pair1));
+      expect(first.status).toBe(200);
+
+      const second = await request(server)
+        .post('/api/v1/relay')
+        .set(bearer(a2.token))
+        .send(body(pair2));
+      expect(second.status).toBe(200);
+    });
+  });
+
+  describe('CORS whitelist (GĐ4.3)', () => {
+    it('should not emit Access-Control-Allow-Origin for foreign origins by default', async () => {
+      const res = await request(server)
+        .get('/api/v1/health')
+        .set('Origin', 'https://evil.example.com');
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    });
+
+    it('should not emit Access-Control-Allow-Origin for same-origin-less requests', async () => {
+      // App mobile / curl không gửi Origin - phải đi qua bình thường
+      const res = await request(server).get('/api/v1/health');
+      expect(res.status).toBe(200);
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
     });
   });
 });
