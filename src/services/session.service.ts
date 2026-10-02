@@ -26,6 +26,7 @@ export const PENDING_PAIR_TTL_MS = 10 * 60 * 1000;
 
 export interface PairConfirmParams {
   receiver_device_id: string;
+  receiver_pubkey?: string;
   fcm_token: string;
   device_name?: string;
   platform?: string;
@@ -49,6 +50,8 @@ function pairToDocument(pair: PairEntity): Record<string, unknown> {
   if (pair.fcm_token !== undefined) doc.fcm_token = pair.fcm_token;
   if (pair.platform !== undefined) doc.platform = pair.platform;
   if (pair.pairing_key_hash !== undefined) doc.pairing_key_hash = pair.pairing_key_hash;
+  if (pair.sender_pubkey !== undefined) doc.sender_pubkey = pair.sender_pubkey;
+  if (pair.receiver_pubkey !== undefined) doc.receiver_pubkey = pair.receiver_pubkey;
   if (pair.paired_at !== undefined) doc.paired_at = pair.paired_at;
   if (pair.expires_at !== undefined) doc.expires_at = pair.expires_at;
   return doc;
@@ -66,6 +69,8 @@ function pairFromDocument(id: string, data: Record<string, unknown> | undefined)
     fcm_token: data.fcm_token as string | undefined,
     platform: data.platform as string | undefined,
     pairing_key_hash: data.pairing_key_hash as string | undefined,
+    sender_pubkey: data.sender_pubkey as string | undefined,
+    receiver_pubkey: data.receiver_pubkey as string | undefined,
     created_at: toIsoString(data.created_at),
     paired_at: data.paired_at as string | undefined,
     expires_at: data.expires_at as string | undefined,
@@ -150,7 +155,8 @@ export class SessionService {
     pairId: string,
     senderDeviceId: string,
     senderDeviceName?: string,
-    pairingKeyHash?: string
+    pairingKeyHash?: string,
+    senderPubkey?: string
   ): Promise<PairEntity> {
     const now = nowIso();
 
@@ -160,6 +166,7 @@ export class SessionService {
       sender_device_name: senderDeviceName,
       is_active: true,
       pairing_key_hash: pairingKeyHash,
+      sender_pubkey: senderPubkey,
       created_at: now,
       last_active_at: now
     };
@@ -291,6 +298,7 @@ export class SessionService {
         ...pair,
         receiver_device_id: params.receiver_device_id,
         receiver_device_name: params.device_name,
+        receiver_pubkey: params.receiver_pubkey,
         fcm_token: params.fcm_token,
         platform: params.platform,
         paired_at: nowIso(),

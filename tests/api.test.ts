@@ -40,17 +40,21 @@ describe('SMS Navigator Server Integration Tests', () => {
     Authorization: `Bearer ${token}`
   });
 
+  const fakePubkey = (): string => crypto.randomBytes(32).toString('base64');
+
   const createPendingPair = async (label: string, senderId?: string, receiverId?: string) => {
     const a = await registerDevice(senderId ?? `A_${label}`);
     const b = await registerDevice(receiverId ?? `B_${label}`);
+    const senderPubkey = fakePubkey();
     const init = await request(server)
       .post('/api/v1/pair/init')
       .set(bearer(a.token))
-      .send({});
+      .send({ sender_pubkey: senderPubkey });
     expect(init.status).toBe(201);
     return {
       a,
       b,
+      senderPubkey,
       pairId: init.body.pair_id as string,
       pairingKey: init.body.pairing_key as string
     };
@@ -60,21 +64,23 @@ describe('SMS Navigator Server Integration Tests', () => {
     const a = await registerDevice(`A_${label}`);
     const b = await registerDevice(`B_${label}`);
     const c = await registerDevice(`C_${label}`);
+    const senderPubkey = fakePubkey();
     const init = await request(server)
       .post('/api/v1/pair/init')
       .set(bearer(a.token))
-      .send({});
+      .send({ sender_pubkey: senderPubkey });
     const pairId = init.body.pair_id as string;
     await request(server)
       .post('/api/v1/pair/confirm')
       .set(bearer(b.token))
       .send({
         pairing_key: init.body.pairing_key,
+        receiver_pubkey: fakePubkey(),
         fcm_token: `fcm_receiver_${label}_12345`,
         device_name: 'Receiver Phone',
         platform: 'android'
       });
-    return { a, b, c, pairId };
+    return { a, b, c, pairId, senderPubkey };
   };
 
   beforeEach(async () => {
@@ -225,11 +231,12 @@ describe('SMS Navigator Server Integration Tests', () => {
 
     it('should create a pair and return pair_id + one-time pairing_key (201)', async () => {
       const { token } = await registerDevice('device_A_init');
+      const senderPubkey = fakePubkey();
 
       const res = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(token))
-        .send({});
+        .send({ sender_pubkey: senderPubkey });
 
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
@@ -245,17 +252,33 @@ describe('SMS Navigator Server Integration Tests', () => {
 
       const pair = await sessionService.getPair(res.body.pair_id);
       expect(pair?.sender_device_id).toBe('device_A_init');
+      expect(pair?.sender_pubkey).toBe(senderPubkey);
 
       // The plaintext pairing key is never persisted server-side
       expect(pair?.pairing_key_hash).toBeDefined();
       expect(JSON.stringify(pair)).not.toContain(res.body.pairing_key);
     });
 
+    it('should reject init without a sender_pubkey (400)', async () => {
+      const { token } = await registerDevice('device_A_no_pubkey');
+
+      const res = await request(server).post('/api/v1/pair/init').set(bearer(token)).send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+    });
+
     it('should generate a fresh pair_id and pairing_key for every init', async () => {
       const { token } = await registerDevice('device_A_init_unique');
 
-      const first = await request(server).post('/api/v1/pair/init').set(bearer(token)).send({});
-      const second = await request(server).post('/api/v1/pair/init').set(bearer(token)).send({});
+      const first = await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(token))
+        .send({ sender_pubkey: fakePubkey() });
+      const second = await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(token))
+        .send({ sender_pubkey: fakePubkey() });
 
       expect(first.status).toBe(201);
       expect(second.status).toBe(201);
@@ -271,13 +294,19 @@ describe('SMS Navigator Server Integration Tests', () => {
       const a = await registerDevice('device_A_regenerate');
       const b = await registerDevice('device_B_regenerate');
 
-      const oldInit = await request(server).post('/api/v1/pair/init').set(bearer(a.token)).send({});
+      const oldInit = await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.token))
+        .send({ sender_pubkey: fakePubkey() });
       await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
-        .send({ pairing_key: oldInit.body.pairing_key, fcm_token: 'fcm_old_pair_12345' });
+        .send({ pairing_key: oldInit.body.pairing_key, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_old_pair_12345' });
 
-      const fresh = await request(server).post('/api/v1/pair/init').set(bearer(a.token)).send({});
+      const fresh = await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(a.token))
+        .send({ sender_pubkey: fakePubkey() });
       expect(fresh.status).toBe(201);
       expect((await sessionService.getPair(fresh.body.pair_id))?.receiver_device_id).toBeUndefined();
     });
@@ -287,7 +316,7 @@ describe('SMS Navigator Server Integration Tests', () => {
     it('should return 401 without auth', async () => {
       const res = await request(server)
         .post('/api/v1/pair/confirm')
-        .send({ pairing_key: 'some_pairing_key_value', fcm_token: 'fcm_token_123456' });
+        .send({ pairing_key: 'some_pairing_key_value', receiver_pubkey: fakePubkey(), fcm_token: 'fcm_token_123456' });
       expect(res.status).toBe(401);
     });
 
@@ -304,9 +333,16 @@ describe('SMS Navigator Server Integration Tests', () => {
       const tooShort = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(token))
-        .send({ pairing_key: 'ab' });
+        .send({ pairing_key: 'ab', receiver_pubkey: fakePubkey() });
       expect(tooShort.status).toBe(400);
       expect(tooShort.body.error).toBe('VALIDATION_ERROR');
+
+      const noReceiverKey = await request(server)
+        .post('/api/v1/pair/confirm')
+        .set(bearer(token))
+        .send({ pairing_key: 'valid_length_pairing_key' });
+      expect(noReceiverKey.status).toBe(400);
+      expect(noReceiverKey.body.error).toBe('VALIDATION_ERROR');
     });
 
     it('should return 404 for an unknown pairing key (never leaks pair existence)', async () => {
@@ -315,7 +351,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(token))
-        .send({ pairing_key: 'ZmFrZV91bmtub3duX3BhaXJpbmdfa2V5', fcm_token: 'fcm_token_123456' });
+        .send({ pairing_key: 'ZmFrZV91bmtub3duX3BhaXJpbmdfa2V5', receiver_pubkey: fakePubkey(), fcm_token: 'fcm_token_123456' });
 
       expect(res.status).toBe(404);
       expect(res.body.error).toBe('PAIR_NOT_FOUND');
@@ -327,7 +363,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(a.token))
-        .send({ pairing_key: pairingKey, fcm_token: 'fcm_self_pair_12345' });
+        .send({ pairing_key: pairingKey, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_self_pair_12345' });
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('SELF_PAIRING_NOT_ALLOWED');
@@ -335,13 +371,15 @@ describe('SMS Navigator Server Integration Tests', () => {
     });
 
     it('should bind Device B and register its FCM token (200)', async () => {
-      const { b, pairingKey, pairId } = await createPendingPair('pair_confirm_ok');
+      const { b, pairingKey, pairId, senderPubkey } = await createPendingPair('pair_confirm_ok');
+      const receiverPubkey = fakePubkey();
 
       const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
         .send({
           pairing_key: pairingKey,
+          receiver_pubkey: receiverPubkey,
           fcm_token: 'fcm_receiver_confirmed_12345',
           device_name: 'Samsung S24 (Malaysia)',
           platform: 'android'
@@ -350,11 +388,14 @@ describe('SMS Navigator Server Integration Tests', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.pair_id).toBe(pairId);
+      // Device B completes the ECDH handshake with the sender pubkey
+      expect(res.body.sender_pubkey).toBe(senderPubkey);
       expectIso8601(res.body.paired_at);
       expect(new Date(res.body.expires_at).getTime()).toBeGreaterThan(nowSeconds() * 1000);
 
       const pair = await sessionService.getPair(pairId);
       expect(pair?.receiver_device_id).toBe(`B_pair_confirm_ok`);
+      expect(pair?.receiver_pubkey).toBe(receiverPubkey);
       expect(pair?.fcm_token).toBe('fcm_receiver_confirmed_12345');
     });
 
@@ -364,13 +405,13 @@ describe('SMS Navigator Server Integration Tests', () => {
       const first = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
-        .send({ pairing_key: pairingKey, fcm_token: 'fcm_first_confirm_12345' });
+        .send({ pairing_key: pairingKey, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_first_confirm_12345' });
       expect(first.status).toBe(200);
 
       const replay = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
-        .send({ pairing_key: pairingKey, fcm_token: 'fcm_first_confirm_12345' });
+        .send({ pairing_key: pairingKey, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_first_confirm_12345' });
 
       expect(replay.status).toBe(404);
       expect(replay.body.error).toBe('PAIR_NOT_FOUND');
@@ -385,7 +426,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(second.b.token))
-        .send({ pairing_key: first.pairingKey, fcm_token: 'fcm_cross_pair_12345' });
+        .send({ pairing_key: first.pairingKey, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_cross_pair_12345' });
 
       expect(res.status).toBe(200);
       expect(res.body.pair_id).toBe(first.pairId);
@@ -406,7 +447,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
-        .send({ pairing_key: pairingKey, fcm_token: 'fcm_ttl_12345' });
+        .send({ pairing_key: pairingKey, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_ttl_12345' });
 
       expect(res.status).toBe(410);
       expect(res.body.error).toBe('PAIR_EXPIRED');
@@ -419,7 +460,7 @@ describe('SMS Navigator Server Integration Tests', () => {
       const res = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.token))
-        .send({ pairing_key: pairingKey, fcm_token: 'fcm_fresh_12345' });
+        .send({ pairing_key: pairingKey, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_fresh_12345' });
 
       expect(res.status).toBe(200);
     });
@@ -487,11 +528,11 @@ describe('SMS Navigator Server Integration Tests', () => {
       const init = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(a.body.token))
-        .send({});
+        .send({ sender_pubkey: fakePubkey() });
       await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.body.token))
-        .send({ pairing_key: init.body.pairing_key, fcm_token: 'fcm_name_init_12345' });
+        .send({ pairing_key: init.body.pairing_key, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_name_init_12345' });
 
       const pair = await sessionService.getPair(init.body.pair_id);
       expect(pair?.sender_device_name).toBe('Pixel 8 (Vietnam)');
@@ -508,11 +549,11 @@ describe('SMS Navigator Server Integration Tests', () => {
       const init = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(a.body.token))
-        .send({});
+        .send({ sender_pubkey: fakePubkey() });
       await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.body.token))
-        .send({ pairing_key: init.body.pairing_key, fcm_token: 'fcm_sender_meta_12345' });
+        .send({ pairing_key: init.body.pairing_key, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_sender_meta_12345' });
 
       const res = await request(server).get('/api/v1/pair/senders').set(bearer(b.body.token));
 
@@ -534,11 +575,11 @@ describe('SMS Navigator Server Integration Tests', () => {
       const init = await request(server)
         .post('/api/v1/pair/init')
         .set(bearer(a.body.token))
-        .send({});
+        .send({ sender_pubkey: fakePubkey() });
       await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(b.body.token))
-        .send({ pairing_key: init.body.pairing_key, fcm_token: 'fcm_legacy_pair_12345' });
+        .send({ pairing_key: init.body.pairing_key, receiver_pubkey: fakePubkey(), fcm_token: 'fcm_legacy_pair_12345' });
 
       const res = await request(server).get('/api/v1/pair/receivers').set(bearer(a.body.token));
 
@@ -1036,7 +1077,13 @@ describe('SMS Navigator Server Integration Tests', () => {
       const tokenA = regA.body.token as string;
       const tokenB = regB.body.token as string;
 
-      const init = await request(server).post('/api/v1/pair/init').set(bearer(tokenA)).send({});
+      const senderPubkey = fakePubkey();
+      const receiverPubkey = fakePubkey();
+
+      const init = await request(server)
+        .post('/api/v1/pair/init')
+        .set(bearer(tokenA))
+        .send({ sender_pubkey: senderPubkey });
       expect(init.status).toBe(201);
       const pairId = init.body.pair_id as string;
       const pairingKey = init.body.pairing_key as string;
@@ -1047,24 +1094,29 @@ describe('SMS Navigator Server Integration Tests', () => {
         .set(bearer(tokenA));
       expect(statusBefore.status).toBe(200);
       expect(statusBefore.body.is_paired).toBe(false);
+      expect(statusBefore.body.receiver_pubkey).toBeUndefined();
 
       const confirm = await request(server)
         .post('/api/v1/pair/confirm')
         .set(bearer(tokenB))
         .send({
           pairing_key: pairingKey,
+          receiver_pubkey: receiverPubkey,
           fcm_token: 'e2e_fcm_receiver_token_12345',
           device_name: 'Receiver Phone',
           platform: 'android'
         });
       expect(confirm.status).toBe(200);
+      expect(confirm.body.sender_pubkey).toBe(senderPubkey);
 
       const statusAfter = await request(server)
         .get(`/api/v1/pair/status/${pairId}`)
-        .set(bearer(tokenB));
+        .set(bearer(tokenA));
       expect(statusAfter.status).toBe(200);
       expect(statusAfter.body.is_paired).toBe(true);
       expect(statusAfter.body.receiver_device_id).toBe('e2e_device_B');
+      // Sender can now fetch the receiver pubkey to derive the shared key
+      expect(statusAfter.body.receiver_pubkey).toBe(receiverPubkey);
 
       const relay = await request(server)
         .post('/api/v1/relay')

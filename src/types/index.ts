@@ -18,6 +18,8 @@ export interface PairEntity {
   fcm_token?: string; // receiver FCM token registered at confirm time
   platform?: string; // receiver platform
   pairing_key_hash?: string; // SHA-256 hex of the QR pairing key - the plaintext key is never stored
+  sender_pubkey?: string; // Device A X25519 public key (base64) for the ECDH handshake
+  receiver_pubkey?: string; // Device B X25519 public key (base64) bound at confirm
   created_at: string; // ISO 8601 UTC
   paired_at?: string; // ISO 8601 UTC
   expires_at?: string; // ISO 8601 UTC
@@ -86,6 +88,7 @@ export interface DeviceFcmTokenRequest {
 
 export interface PairConfirmRequest {
   pairing_key: string; // one-time secret from the QR payload - proof of possession
+  receiver_pubkey: string; // X25519 public key (base64) for the ECDH handshake
   fcm_token?: string;
   device_name?: string;
   platform?: string;
@@ -114,6 +117,7 @@ export interface PairStatusResponse {
   receiver_device_id?: string;
   device_name?: string;
   platform?: string;
+  receiver_pubkey?: string; // exposed to the sender so it can complete the ECDH handshake
   paired_at?: string; // ISO 8601 UTC
   expires_at?: string; // ISO 8601 UTC
   is_active?: boolean;

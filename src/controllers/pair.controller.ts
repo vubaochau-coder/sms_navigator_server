@@ -9,16 +9,25 @@ import { sha256Hex } from '../services/device.service.js';
 export class PairController {
   public static async initPairing(req: Request, res: Response): Promise<void> {
     const device = req.device!;
+    const { sender_pubkey } = req.body as { sender_pubkey?: string };
 
     // The server owns both identifiers: the pair id (opaque UUID) and the
     // one-time 128-bit pairing key embedded in the QR payload. The plaintext
     // key leaves the server exactly once - inside this response - and is only
-    // ever stored as a SHA-256 hash.
+    // ever stored as a SHA-256 hash. The sender's X25519 public key is stored
+    // so Device B can complete the ECDH handshake; private keys never reach
+    // the server.
     const pairId = randomUUID();
     const pairingKey = randomBytes(16).toString('base64url');
     const expiresAt = msToIso(Date.now() + PENDING_PAIR_TTL_MS);
 
-    await sessionService.createPair(pairId, device.device_id, device.device_name, sha256Hex(pairingKey));
+    await sessionService.createPair(
+      pairId,
+      device.device_id,
+      device.device_name,
+      sha256Hex(pairingKey),
+      typeof sender_pubkey === 'string' && sender_pubkey.length > 0 ? sender_pubkey : undefined
+    );
 
     res.status(201).json({
       success: true,
@@ -31,10 +40,11 @@ export class PairController {
 
   public static async confirmPairing(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { pairing_key, fcm_token, device_name, platform } = req.body as PairConfirmRequest;
+    const { pairing_key, receiver_pubkey, fcm_token, device_name, platform } = req.body as PairConfirmRequest;
 
     const result = await sessionService.confirmPairingByPairingKey(pairing_key, {
       receiver_device_id: device.device_id,
+      receiver_pubkey,
       fcm_token: fcm_token ?? device.fcm_token ?? '',
       device_name,
       platform
@@ -75,7 +85,10 @@ export class PairController {
           message: 'Device paired successfully with FCM token registered',
           pair_id: result.pair.pair_id,
           paired_at: result.pair.paired_at,
-          expires_at: result.pair.expires_at
+          expires_at: result.pair.expires_at,
+          // Device B cross-checks this against the sender pubkey embedded in
+          // the QR before deriving the shared key (anti server-side key swap).
+          sender_pubkey: result.pair.sender_pubkey
         });
         return;
     }
@@ -114,6 +127,7 @@ export class PairController {
       receiver_device_id: pair.receiver_device_id,
       device_name: pair.receiver_device_name,
       platform: pair.platform,
+      receiver_pubkey: pair.receiver_pubkey,
       paired_at: pair.paired_at,
       expires_at: pair.expires_at,
       is_active: pair.is_active !== false
