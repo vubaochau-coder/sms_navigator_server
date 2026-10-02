@@ -17,6 +17,7 @@ export interface PairEntity {
   is_active: boolean; // Sender toggle: true = active relay, false = paused by sender
   fcm_token?: string; // receiver FCM token registered at confirm time
   platform?: string; // receiver platform
+  pairing_key_hash?: string; // SHA-256 hex of the QR pairing key - the plaintext key is never stored
   created_at: string; // ISO 8601 UTC
   paired_at?: string; // ISO 8601 UTC
   expires_at?: string; // ISO 8601 UTC
@@ -84,11 +85,19 @@ export interface DeviceFcmTokenRequest {
 }
 
 export interface PairConfirmRequest {
-  pair_id: string;
+  pairing_key: string; // one-time secret from the QR payload - proof of possession
   fcm_token?: string;
   device_name?: string;
   platform?: string;
 }
+
+/** Outcome of the transactional pairing confirmation. */
+export type PairConfirmOutcome =
+  | { status: 'NOT_FOUND' }
+  | { status: 'SELF_PAIRING_NOT_ALLOWED' }
+  | { status: 'EXPIRED' }
+  | { status: 'ALREADY_CONFIRMED' }
+  | { status: 'CONFIRMED'; pair: PairEntity };
 
 export interface PendingRelayMessage {
   message_id: string;

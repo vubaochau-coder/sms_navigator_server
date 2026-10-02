@@ -28,6 +28,21 @@ export const pairRateLimiter = rateLimit({
   }
 });
 
+// Confirm attempts are the brute-force surface (guessing QR pairing keys), so
+// they get a much tighter budget than the init endpoint.
+export const pairConfirmRateLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 10, // Limit each IP to 10 confirm attempts per 5 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+  message: {
+    success: false,
+    error: 'TOO_MANY_REQUESTS',
+    message: 'Too many pairing confirm attempts. Please try again later.'
+  }
+});
+
 export const deviceRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 20, // Limit each IP to 20 device registrations per 15 minutes

@@ -1,101 +1,84 @@
 import { Request, Response } from 'express';
-import { randomUUID } from 'crypto';
-import { sessionService } from '../services/session.service.js';
+import { randomBytes, randomUUID } from 'crypto';
+import { sessionService, PENDING_PAIR_TTL_MS } from '../services/session.service.js';
 import { deviceService } from '../services/device.service.js';
 import { PairedReceiverItem, PairedSenderItem, PairConfirmRequest, PairStatusResponse } from '../types/index.js';
-import { isoToMs } from '../utils/time.js';
+import { isoToMs, msToIso } from '../utils/time.js';
+import { sha256Hex } from '../services/device.service.js';
 
 export class PairController {
   public static async initPairing(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const requestedPairId: string | undefined = req.body?.pair_id;
-    const pairId = requestedPairId ?? randomUUID();
 
-    const existing = await sessionService.getPair(pairId);
-    if (existing) {
-      if (existing.sender_device_id !== device.device_id) {
-        res.status(403).json({
-          success: false,
-          error: 'FORBIDDEN',
-          message: 'This pair_id already belongs to another device.'
-        });
-        return;
-      }
+    // The server owns both identifiers: the pair id (opaque UUID) and the
+    // one-time 128-bit pairing key embedded in the QR payload. The plaintext
+    // key leaves the server exactly once - inside this response - and is only
+    // ever stored as a SHA-256 hash.
+    const pairId = randomUUID();
+    const pairingKey = randomBytes(16).toString('base64url');
+    const expiresAt = msToIso(Date.now() + PENDING_PAIR_TTL_MS);
 
-      if (existing.receiver_device_id) {
-        res.status(409).json({
-          success: false,
-          error: 'PAIR_ALREADY_CONFIRMED',
-          message: 'This pair has already been confirmed. Please use a new pair_id.'
-        });
-        return;
-      }
-    }
-
-    const pair = existing ?? (await sessionService.createPair(pairId, device.device_id, device.device_name));
-
-    // Backfill the sender's display name for pairs created before the name
-    // was persisted (or when Device A registered its name after init).
-    if (existing && !existing.sender_device_name && device.device_name) {
-      existing.sender_device_name = device.device_name;
-      await sessionService.updatePair(existing);
-    }
+    await sessionService.createPair(pairId, device.device_id, device.device_name, sha256Hex(pairingKey));
 
     res.status(201).json({
       success: true,
       message: 'Pairing session created. Share the QR payload with Device B to confirm.',
-      pair_id: pair.pair_id
+      pair_id: pairId,
+      pairing_key: pairingKey,
+      expires_at: expiresAt
     });
   }
 
   public static async confirmPairing(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { pair_id, fcm_token, device_name, platform } = req.body as PairConfirmRequest;
+    const { pairing_key, fcm_token, device_name, platform } = req.body as PairConfirmRequest;
 
-    const pair = await sessionService.getPair(pair_id);
-    if (!pair) {
-      res.status(404).json({
-        success: false,
-        error: 'PAIR_NOT_FOUND',
-        message: `No pairing session found for pair_id: ${pair_id}. Device A must call /pair/init first.`
-      });
-      return;
-    }
-
-    if (pair.sender_device_id === device.device_id) {
-      res.status(400).json({
-        success: false,
-        error: 'SELF_PAIRING_NOT_ALLOWED',
-        message: 'Device A cannot confirm its own pairing. Pairing must be confirmed by Device B.'
-      });
-      return;
-    }
-
-    if (pair.receiver_device_id) {
-      res.status(409).json({
-        success: false,
-        error: 'PAIR_ALREADY_CONFIRMED',
-        message: 'This pair has already been confirmed by another device.'
-      });
-      return;
-    }
-
-    // QR-based pairing: the scanned pair payload (pair_id + authenticated
-    // sender identity) is sufficient to confirm.
-    const confirmed = await sessionService.confirmPairing(pair_id, {
+    const result = await sessionService.confirmPairingByPairingKey(pairing_key, {
       receiver_device_id: device.device_id,
       fcm_token: fcm_token ?? device.fcm_token ?? '',
       device_name,
       platform
     });
 
-    res.status(200).json({
-      success: true,
-      message: 'Device paired successfully with FCM token registered',
-      pair_id: confirmed!.pair_id,
-      paired_at: confirmed!.paired_at,
-      expires_at: confirmed!.expires_at
-    });
+    switch (result.status) {
+      case 'NOT_FOUND':
+        res.status(404).json({
+          success: false,
+          error: 'PAIR_NOT_FOUND',
+          message: 'No valid pairing session for this QR key. Device A must call /pair/init and share a fresh QR.'
+        });
+        return;
+      case 'SELF_PAIRING_NOT_ALLOWED':
+        res.status(400).json({
+          success: false,
+          error: 'SELF_PAIRING_NOT_ALLOWED',
+          message: 'Device A cannot confirm its own pairing. Pairing must be confirmed by Device B.'
+        });
+        return;
+      case 'EXPIRED':
+        res.status(410).json({
+          success: false,
+          error: 'PAIR_EXPIRED',
+          message: 'This pairing QR has expired (10-minute validity). Please generate a new QR on Device A.'
+        });
+        return;
+      case 'ALREADY_CONFIRMED':
+        res.status(409).json({
+          success: false,
+          error: 'PAIR_ALREADY_CONFIRMED',
+          message: 'This pair has already been confirmed by another device.'
+        });
+        return;
+      case 'CONFIRMED':
+        res.status(200).json({
+          success: true,
+          message: 'Device paired successfully with FCM token registered',
+          pair_id: result.pair.pair_id,
+          paired_at: result.pair.paired_at,
+          expires_at: result.pair.expires_at
+        });
+        return;
+    }
   }
 
   public static async getPairStatus(req: Request, res: Response): Promise<void> {

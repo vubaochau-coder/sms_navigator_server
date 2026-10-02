@@ -1,14 +1,18 @@
 import { z } from 'zod';
 
-export const pairInitSchema = z.object({
-  pair_id: z.string().min(3, 'pair_id must be at least 3 characters').max(128).optional()
-});
+/**
+ * Device A initiates a pairing session. The server generates the pair_id and
+ * the one-time pairing_key, so the request body carries nothing required.
+ */
+export const pairInitSchema = z.object({}).passthrough();
 
 export const pairConfirmSchema = z.object({
-  pair_id: z
-    .string({ required_error: 'pair_id is required' })
-    .min(3, 'pair_id must be at least 3 characters')
-    .max(128, 'pair_id too long'),
+  // Proof of possession: the one-time key embedded in the QR payload.
+  // Without it an authenticated attacker cannot hijack the pairing slot.
+  pairing_key: z
+    .string({ required_error: 'pairing_key is required' })
+    .min(16, 'pairing_key is invalid')
+    .max(128, 'pairing_key too long'),
   fcm_token: z
     .string()
     .min(5, 'fcm_token is invalid')

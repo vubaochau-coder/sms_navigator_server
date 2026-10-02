@@ -1,5 +1,6 @@
 import type * as admin from 'firebase-admin';
 import {
+  PairConfirmOutcome,
   PairEntity,
   PendingRelayMessage,
   RelayHistoryRecord,
@@ -9,14 +10,19 @@ import {
 import { env } from '../config/env.js';
 import { getFirestoreDb } from '../config/firebase.js';
 import { nowIso, msToIso, isoToMs, toIsoString } from '../utils/time.js';
+import { sha256Hex } from './device.service.js';
 
 export const PAIRS_COLLECTION = 'pairs';
+export const PAIR_KEYS_COLLECTION = 'pair_keys';
 export const MESSAGES_COLLECTION = 'messages';
 
 export const MESSAGE_DEDUP_TTL_SECONDS = 600; // 10 minutes
 export const PENDING_MESSAGE_TTL_SECONDS = 300; // 5 minutes
 export const MESSAGE_HISTORY_TTL_SECONDS = 86400; // relay history is kept for 24 hours
 const STALE_PENDING_PAIR_SECONDS = 600; // unconfirmed pairs follow the QR payload's 10-minute TTL
+
+/** Server-enforced pairing window: a QR payload is only confirmable for 10 minutes. */
+export const PENDING_PAIR_TTL_MS = 10 * 60 * 1000;
 
 export interface PairConfirmParams {
   receiver_device_id: string;
@@ -42,6 +48,7 @@ function pairToDocument(pair: PairEntity): Record<string, unknown> {
   if (pair.receiver_device_name !== undefined) doc.receiver_device_name = pair.receiver_device_name;
   if (pair.fcm_token !== undefined) doc.fcm_token = pair.fcm_token;
   if (pair.platform !== undefined) doc.platform = pair.platform;
+  if (pair.pairing_key_hash !== undefined) doc.pairing_key_hash = pair.pairing_key_hash;
   if (pair.paired_at !== undefined) doc.paired_at = pair.paired_at;
   if (pair.expires_at !== undefined) doc.expires_at = pair.expires_at;
   return doc;
@@ -58,6 +65,7 @@ function pairFromDocument(id: string, data: Record<string, unknown> | undefined)
     is_active: data.is_active !== false,
     fcm_token: data.fcm_token as string | undefined,
     platform: data.platform as string | undefined,
+    pairing_key_hash: data.pairing_key_hash as string | undefined,
     created_at: toIsoString(data.created_at),
     paired_at: data.paired_at as string | undefined,
     expires_at: data.expires_at as string | undefined,
@@ -141,7 +149,8 @@ export class SessionService {
   public async createPair(
     pairId: string,
     senderDeviceId: string,
-    senderDeviceName?: string
+    senderDeviceName?: string,
+    pairingKeyHash?: string
   ): Promise<PairEntity> {
     const now = nowIso();
 
@@ -150,11 +159,23 @@ export class SessionService {
       sender_device_id: senderDeviceId,
       sender_device_name: senderDeviceName,
       is_active: true,
+      pairing_key_hash: pairingKeyHash,
       created_at: now,
       last_active_at: now
     };
 
-    await this.savePair(pair);
+    const db = getFirestoreDb();
+    if (db) {
+      await db.collection(PAIRS_COLLECTION).doc(pairId).set(pairToDocument(pair));
+      if (pairingKeyHash) {
+        // O(1) lookup document pairing the QR key hash to its pair. Deleted on
+        // confirmation so every QR key is a true one-time-use token.
+        await db.collection(PAIR_KEYS_COLLECTION).doc(pairingKeyHash).set({
+          pair_id: pairId,
+          created_at: now
+        });
+      }
+    }
     return pair;
   }
 
@@ -223,21 +244,64 @@ export class SessionService {
     return pair;
   }
 
-  public async confirmPairing(pairId: string, params: PairConfirmParams): Promise<PairEntity | null> {
-    const pair = await this.rawGetPair(pairId);
-    if (!pair) return null;
+  /**
+   * Transactional pairing confirmation.
+   *
+   * Security invariants enforced inside a single Firestore transaction:
+   * 1. Proof of possession: the caller must present the QR's pairing key.
+   * 2. Server-side TTL: pending pairs older than PENDING_PAIR_TTL_MS are rejected (410).
+   * 3. One-time use: the pair_keys lookup doc is deleted, so a key confirms exactly once.
+   * 4. Race safety: concurrent confirms are serialized - only the first one wins.
+   */
+  public async confirmPairingByPairingKey(
+    pairingKey: string,
+    params: PairConfirmParams
+  ): Promise<PairConfirmOutcome> {
+    const db = getFirestoreDb();
+    if (!db) return { status: 'NOT_FOUND' };
 
-    const now = nowMs();
-    pair.receiver_device_id = params.receiver_device_id;
-    pair.receiver_device_name = params.device_name;
-    pair.fcm_token = params.fcm_token;
-    pair.platform = params.platform;
-    pair.paired_at = nowIso();
-    pair.expires_at = msToIso(now + env.SESSION_TTL_HOURS * 3600 * 1000);
-    pair.last_active_at = nowIso();
+    const keyHash = sha256Hex(pairingKey);
+    const keyRef = db.collection(PAIR_KEYS_COLLECTION).doc(keyHash);
 
-    await this.savePair(pair);
-    return pair;
+    return db.runTransaction(async (tx): Promise<PairConfirmOutcome> => {
+      const keyDoc = await tx.get(keyRef);
+      if (!keyDoc.exists) return { status: 'NOT_FOUND' };
+
+      const pairId = keyDoc.get('pair_id');
+      if (typeof pairId !== 'string') return { status: 'NOT_FOUND' };
+
+      const pairRef = db.collection(PAIRS_COLLECTION).doc(pairId);
+      const pairDoc = await tx.get(pairRef);
+      const pair = pairFromDocument(pairDoc.id, pairDoc.data());
+      if (!pair) return { status: 'NOT_FOUND' };
+
+      if (pair.sender_device_id === params.receiver_device_id) {
+        return { status: 'SELF_PAIRING_NOT_ALLOWED' };
+      }
+
+      if (pair.receiver_device_id) {
+        return { status: 'ALREADY_CONFIRMED' };
+      }
+
+      if (nowMs() - isoToMs(pair.created_at) > PENDING_PAIR_TTL_MS) {
+        return { status: 'EXPIRED' };
+      }
+
+      const confirmed: PairEntity = {
+        ...pair,
+        receiver_device_id: params.receiver_device_id,
+        receiver_device_name: params.device_name,
+        fcm_token: params.fcm_token,
+        platform: params.platform,
+        paired_at: nowIso(),
+        expires_at: msToIso(nowMs() + env.SESSION_TTL_HOURS * 3600 * 1000),
+        last_active_at: nowIso()
+      };
+
+      tx.update(pairRef, pairToDocument(confirmed));
+      tx.delete(keyRef);
+      return { status: 'CONFIRMED', pair: confirmed };
+    });
   }
 
   public async removePair(pairId: string): Promise<boolean> {
@@ -248,7 +312,11 @@ export class SessionService {
     const doc = await docRef.get();
     const existed = doc.exists;
     if (existed) {
+      const pair = pairFromDocument(doc.id, doc.data());
       await docRef.delete();
+      if (pair?.pairing_key_hash) {
+        await db.collection(PAIR_KEYS_COLLECTION).doc(pair.pairing_key_hash).delete();
+      }
     }
 
     // Clear the pending polling queue of this pair (history records are kept)
@@ -381,8 +449,22 @@ export class SessionService {
         const pair = pairFromDocument(doc.id, doc.data());
         if (pair && !pair.receiver_device_id) {
           await doc.ref.delete();
+          if (pair.pairing_key_hash) {
+            await db.collection(PAIR_KEYS_COLLECTION).doc(pair.pairing_key_hash).delete();
+          }
           removedCount++;
         }
+      }
+
+      // Orphaned QR key lookup docs: bound to no live pairing session anymore
+      // (2x TTL margin so a just-created key is never swept mid-pairing)
+      const staleKeys = await db
+        .collection(PAIR_KEYS_COLLECTION)
+        .where('created_at', '<', msToIso(nowMs() - 2 * STALE_PENDING_PAIR_SECONDS * 1000))
+        .get();
+      for (const doc of staleKeys.docs) {
+        await doc.ref.delete();
+        removedCount++;
       }
 
       // Relay messages older than 24h: dedup (10 min) and history views
@@ -507,7 +589,7 @@ export class SessionService {
     const db = getFirestoreDb();
     if (!db) return;
 
-    for (const collectionName of [PAIRS_COLLECTION, MESSAGES_COLLECTION]) {
+    for (const collectionName of [PAIRS_COLLECTION, PAIR_KEYS_COLLECTION, MESSAGES_COLLECTION]) {
       const snapshot = await db.collection(collectionName).get();
       await Promise.all(snapshot.docs.map((doc) => doc.ref.delete()));
     }

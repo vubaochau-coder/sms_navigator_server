@@ -102,6 +102,11 @@ export class MockDocumentSnapshot {
   public data(): MockDocumentData | undefined {
     return this.dataOrNull ? deepClone(this.dataOrNull) : undefined;
   }
+
+  /** Mirrors admin.firestore.DocumentSnapshot.get(fieldPath). */
+  public get(fieldPath: string): MockFieldValue {
+    return getField(this.dataOrNull ?? {}, fieldPath);
+  }
 }
 
 export class MockQuerySnapshot {
@@ -216,8 +221,48 @@ export class MockCollectionReference extends MockQuery {
   }
 }
 
+/**
+ * Buffered-Write transaction.
+ *
+ * Reads see the pre-transaction state; writes are buffered and applied
+ * sequentially after the update function resolves. This mirrors Firestore's
+ * isolation guarantee closely enough for the in-memory adapter (Node's
+ * single-threaded event loop already serializes concurrent transactions).
+ */
+export class MockTransaction {
+  private readonly operations: Array<() => Promise<void>> = [];
+
+  public async get(ref: MockDocumentReference | MockQuery): Promise<MockDocumentSnapshot | MockQuerySnapshot> {
+    return ref.get();
+  }
+
+  public update(ref: MockDocumentReference, data: MockDocumentData): MockTransaction {
+    this.operations.push(() => ref.update(data));
+    return this;
+  }
+
+  public set(ref: MockDocumentReference, data: MockDocumentData, options?: MockSetOptions): MockTransaction {
+    this.operations.push(() => ref.set(data, options));
+    return this;
+  }
+
+  public delete(ref: MockDocumentReference): MockTransaction {
+    this.operations.push(() => ref.delete());
+    return this;
+  }
+
+  public async commit(): Promise<void> {
+    for (const operation of this.operations) {
+      await operation();
+    }
+  }
+}
+
 export class MockFirestore {
   private readonly collections = new Map<string, Map<string, MockDocumentData>>();
+  // Firestore runs transactions in isolation: serialize them so a later
+  // transaction's reads always observe an earlier one's committed writes.
+  private transactionChain: Promise<unknown> = Promise.resolve();
 
   public collection(name: string): MockCollectionReference {
     let store = this.collections.get(name);
@@ -226,6 +271,18 @@ export class MockFirestore {
       this.collections.set(name, store);
     }
     return new MockCollectionReference(name, store);
+  }
+
+  public async runTransaction<T>(updateFunction: (tx: MockTransaction) => Promise<T>): Promise<T> {
+    const run = this.transactionChain.then(async () => {
+      const tx = new MockTransaction();
+      const result = await updateFunction(tx);
+      await tx.commit();
+      return result;
+    });
+    // Keep the chain alive even when a transaction rejects
+    this.transactionChain = run.catch(() => undefined);
+    return run;
   }
 
   /** Wipes every collection - used by test setup via services' clearAll(). */
