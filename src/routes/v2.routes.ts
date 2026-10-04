@@ -13,6 +13,7 @@ import { PairingV2Controller } from '../controllers/pairing.v2.controller.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import {
   deviceRegisterV2Schema,
+  fcmTokenV2Schema,
   deviceNameV2Schema,
   channelCreateSchema,
   channelIdQuerySchema,
@@ -20,8 +21,7 @@ import {
   pairingRequestClaimSchema,
   channelRequestsQuerySchema,
   pairingApproveSchema,
-  pairingRejectSchema,
-  pairingCancelSchema,
+  pairingRequestIdSchema,
   keyEnvelopeQuerySchema,
   messageSendV2Schema,
   messagesFetchQuerySchema,
@@ -55,6 +55,14 @@ router.put(
   v2NameRateLimiter,
   validateBody(deviceNameV2Schema),
   asyncHandler(DeviceV2Controller.updateName)
+);
+
+// PUT /api/v2/devices/fcm-token — wake-up bell registration
+router.put(
+  '/devices/fcm-token',
+  authenticate,
+  validateBody(fcmTokenV2Schema),
+  asyncHandler(DeviceV2Controller.updateFcmToken)
 );
 
 // ---- Channels ---------------------------------------------------------------
@@ -128,6 +136,13 @@ router.post(
   asyncHandler(PairingV2Controller.claimRequest)
 );
 
+// GET /api/v2/pairing/requests/mine — statuses of requests sent by the caller
+router.get(
+  '/pairing/requests/mine',
+  authenticate,
+  asyncHandler(PairingV2Controller.listMyRequests)
+);
+
 router.post(
   '/pairing/requests/approve',
   authenticate,
@@ -139,14 +154,14 @@ router.post(
 router.post(
   '/pairing/requests/reject',
   authenticate,
-  validateBody(pairingRejectSchema),
+  validateBody(pairingRequestIdSchema),
   asyncHandler(PairingV2Controller.rejectRequest)
 );
 
 router.post(
   '/pairing/requests/cancel',
   authenticate,
-  validateBody(pairingCancelSchema),
+  validateBody(pairingRequestIdSchema),
   asyncHandler(PairingV2Controller.cancelRequest)
 );
 

@@ -55,6 +55,30 @@ export class ReplayGuardService {
       .digest('hex');
   }
 
+  /**
+   * T5 (SRD 4.1 / API spec §6.2): caller computes the bind hash itself —
+   * `sha256(channel_id|nonce|ciphertext)` — and this method only does
+   * dedup + TTL. Returns true (replay) or false (recorded, first time).
+   */
+  checkAndRecordHash(fingerprint: string): boolean {
+    this.evictExpired();
+
+    const existingExpiry = this.entries.get(fingerprint);
+    if (existingExpiry !== undefined && existingExpiry > this.now()) {
+      return true;
+    }
+
+    if (this.entries.size >= this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.entries.delete(oldestKey);
+      }
+    }
+
+    this.entries.set(fingerprint, this.now() + this.ttlMs);
+    return false;
+  }
+
   /** Số entry đang giữ (dùng trong test). */
   get size(): number {
     return this.entries.size;

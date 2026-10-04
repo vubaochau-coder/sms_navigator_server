@@ -1,22 +1,29 @@
 import { Request, Response } from 'express';
-import { pairingService } from '../services/pairing.service.js';
+import { pairingV2Service } from '../services/pairing.v2.service.js';
 import { channelService } from '../services/channel.service.js';
 import { deviceService } from '../services/device.service.js';
 import { fcmService } from '../services/fcm.service.js';
-import { EnvelopeInput } from '../services/channel.service.js';
+import { PackageInput } from '../types/v2.js';
 
 export class PairingV2Controller {
-  /** POST /api/v2/pairing/requests — T1 member claims the QR token. */
+  /** POST /api/v2/pairing/requests — T1 member claims the QR invite (§5.1). */
   public static async claimRequest(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { token, encrypted_device_name } = req.body as {
-      token: string;
-      encrypted_device_name?: string;
+    const { session_id, pairing_token, device_name } = req.body as {
+      session_id: string;
+      pairing_token: string;
+      device_name: string;
     };
 
-    const claimed = await pairingService.claimSession(device, token, encrypted_device_name);
+    const claimed = await pairingV2Service.claimSession(
+      device.device_id,
+      device.public_key ?? '',
+      session_id,
+      pairing_token,
+      device_name
+    );
 
-    // Wake-up bell to the owner (best-effort, never in the consistency path)
+    // Wake-up bell to the owner (best-effort, never in the consistency path — N8)
     try {
       const channel = await channelService.findChannelById(claimed.channel_id);
       if (channel) {
@@ -24,8 +31,9 @@ export class PairingV2Controller {
         if (owner?.fcm_token) {
           await fcmService.sendDataNotification(owner.fcm_token, {
             type: 'CHANNEL_EVENT',
+            channel_id: claimed.channel_id,
             kind: 'JOIN_REQUEST',
-            channel_id: claimed.channel_id
+            requester_device_name: device_name
           });
         }
       }
@@ -43,73 +51,63 @@ export class PairingV2Controller {
     });
   }
 
-  /** POST /api/v2/pairing/requests/approve — T2 approve + rotate epoch. */
+  /** GET /api/v2/pairing/requests/mine — statuses of requests sent by the caller (§5.2). */
+  public static async listMyRequests(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const requests = await pairingV2Service.listMyRequests(device.device_id);
+
+    res.status(200).json({
+      success: true,
+      requests
+    });
+  }
+
+  /** POST /api/v2/pairing/requests/approve — T2 approve + rotate (Owner package, §5.4). */
   public static async approveRequest(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { channel_id, request_id, new_epoch, envelopes } = req.body as {
-      channel_id: string;
-      request_id: string;
-      new_epoch: number;
-      envelopes: EnvelopeInput[];
-    };
+    const { request_id, package: pkg } = req.body as { request_id: string; package: PackageInput };
 
-    const result = await pairingService.approveRequest(device.device_id, channel_id, request_id, new_epoch, envelopes);
+    const result = await pairingV2Service.approveRequest(device.device_id, request_id, pkg);
 
-    // Bells: REQUEST_APPROVED to the requester + CHANNEL_KEY_ROTATED to the
-    // existing ACTIVE members that just received a fresh-epoch envelope.
+    // Bell: APPROVED to the requester (best-effort, N8)
     try {
-      const members = await channelService.listActiveMembers(channel_id);
-      await Promise.all(
-        members.map(async (member) => {
-          const memberDevice = await deviceService.findByDeviceId(member.device_id);
-          if (!memberDevice?.fcm_token) return;
-          const kind = member.device_id === result.requester_device_id ? 'REQUEST_APPROVED' : 'CHANNEL_KEY_ROTATED';
-          await fcmService.sendDataNotification(memberDevice.fcm_token, {
-            type: 'CHANNEL_EVENT',
-            kind,
-            channel_id,
-            epoch: String(new_epoch)
-          });
-        })
-      );
+      const requester = await deviceService.findByDeviceId(result.requester_device_id);
+      if (requester?.fcm_token) {
+        await fcmService.sendDataNotification(requester.fcm_token, {
+          type: 'CHANNEL_EVENT',
+          kind: 'APPROVED',
+          epoch: String(result.current_epoch)
+        });
+      }
     } catch {
       // ignore FCM failures
     }
 
     res.status(200).json({
       success: true,
-      request_id,
-      status: 'APPROVED',
-      requester_device_id: result.requester_device_id,
-      current_epoch: result.current_epoch
+      current_epoch: result.current_epoch,
+      membership_version: result.membership_version,
+      requester_device_id: result.requester_device_id
     });
   }
 
-  /** POST /api/v2/pairing/requests/reject — T6 (Owner). */
+  /** POST /api/v2/pairing/requests/reject — T6 (Owner, §5.5). */
   public static async rejectRequest(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { channel_id, request_id } = req.body as { channel_id: string; request_id: string };
+    const { request_id } = req.body as { request_id: string };
 
-    await pairingService.rejectRequest(device.device_id, channel_id, request_id);
+    await pairingV2Service.rejectRequest(device.device_id, request_id);
 
-    res.status(200).json({
-      success: true,
-      request_id,
-      status: 'REJECTED'
-    });
+    res.status(200).json({ success: true });
   }
 
-  /** POST /api/v2/pairing/requests/cancel — T6 (requester only). */
+  /** POST /api/v2/pairing/requests/cancel — T6 (requester only, §5.6). */
   public static async cancelRequest(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { channel_id, request_id } = req.body as { channel_id: string; request_id: string };
+    const { request_id } = req.body as { request_id: string };
 
-    await pairingService.cancelRequest(device.device_id, channel_id, request_id);
+    await pairingV2Service.cancelRequest(device.device_id, request_id);
 
-    res.status(200).json({
-      success: true,
-      request_id,
-      status: 'CANCELLED'
-    });
+    res.status(200).json({ success: true });
   }
 }

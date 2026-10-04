@@ -14,6 +14,7 @@ export interface DeviceRegisterInput {
   public_key?: string;
   device_name?: string;
   platform?: string;
+  fcm_token?: string;
 }
 
 function toDocument(device: DeviceEntity): Record<string, unknown> {
@@ -64,7 +65,7 @@ export class DeviceService {
       public_key: input.public_key ?? existing?.public_key,
       device_name: input.device_name ?? existing?.device_name,
       platform: input.platform ?? existing?.platform,
-      fcm_token: existing?.fcm_token,
+      fcm_token: input.fcm_token ?? existing?.fcm_token,
       created_at: existing?.created_at ?? now,
       last_active_at: now
     };

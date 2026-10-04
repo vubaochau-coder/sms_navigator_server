@@ -1,43 +1,54 @@
 import { Request, Response } from 'express';
 import { deviceService } from '../services/device.service.js';
 import { channelService } from '../services/channel.service.js';
-import { DeviceRegisterInput } from '../services/device.service.js';
 
 export class DeviceV2Controller {
   /**
-   * POST /api/v2/devices/register — requires a 32-byte X25519 public key.
-   * Idempotent per device_id (reinstall policy) and per public_key: re-calling
-   * with the same identity reuses the device record and issues a fresh token.
+   * POST /api/v2/devices/register (API spec §3.1) — requires device_id,
+   * device_name, platform, public_key (32-byte X25519 base64); fcm_token
+   * optional. Idempotent per device_id: re-calling with the same device_id
+   * issues a fresh token and updates public_key/device_name (reinstall
+   * policy SRD 8.2 — reinstall always generates a new device_id).
    */
   public static async registerDevice(req: Request, res: Response): Promise<void> {
-    const { public_key, device_name, platform, device_id } = req.body as DeviceRegisterInput & {
+    const { device_id, device_name, platform, public_key, fcm_token } = req.body as {
+      device_id: string;
+      device_name: string;
+      platform: 'android' | 'ios';
       public_key: string;
+      fcm_token?: string;
     };
 
-    // Same identity key without an explicit device_id → same installation
-    const matchByKey = device_id ? null : await deviceService.findByPublicKey(public_key);
-
     const { device, token } = await deviceService.registerDevice({
-      device_id: device_id ?? matchByKey?.device_id,
-      public_key,
+      device_id,
       device_name,
-      platform
+      platform,
+      public_key,
+      fcm_token
     });
 
     res.status(201).json({
       success: true,
       device_token: token,
-      device_id: device.device_id,
-      device_name: device.device_name ?? '',
-      platform: device.platform ?? 'unknown',
-      created_at: device.created_at
+      device_id: device.device_id
     });
   }
 
+  /** PUT /api/v2/devices/fcm-token (§3.2). */
+  public static async updateFcmToken(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { fcm_token } = req.body as { fcm_token: string };
+
+    await deviceService.updateFcmToken(device.device_id, fcm_token);
+
+    res.status(200).json({ success: true });
+  }
+
   /**
-   * PUT /api/v2/devices/name — display-only rename (no key rotation, no epoch
-   * change). Fan-out happens in a single transaction: devices doc, every
-   * channel_members ACTIVE copy and every PENDING pairing_requests copy.
+   * PUT /api/v2/devices/name (§3.3) — display-only rename (no key rotation,
+   * no epoch/membership_version change). Fan-out happens in a single
+   * transaction: devices doc, every channel_members ACTIVE copy and every
+   * PENDING pairing_requests copy.
    */
   public static async updateName(req: Request, res: Response): Promise<void> {
     const device = req.device!;
@@ -45,10 +56,6 @@ export class DeviceV2Controller {
 
     await channelService.renameDeviceEverywhere(device.device_id, device_name);
 
-    res.status(200).json({
-      success: true,
-      device_id: device.device_id,
-      device_name
-    });
+    res.status(200).json({ success: true });
   }
 }

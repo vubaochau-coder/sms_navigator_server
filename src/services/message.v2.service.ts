@@ -1,20 +1,15 @@
-import { randomUUID } from 'crypto';
-import * as admin from 'firebase-admin';
-import { MessageV2Entity } from '../types/v2.js';
+import { createHash, randomUUID } from 'crypto';
+import { ChannelMessageEntity } from '../types/v2.js';
 import { getFirestoreDb } from '../config/firebase.js';
 import { nowIso, msToIso, dayRange } from '../utils/time.js';
 import { HttpError } from '../utils/http-error.js';
 import { replayGuardService } from './replay-guard.service.js';
 import { deviceService } from './device.service.js';
 import { fcmService } from './fcm.service.js';
-import { CHANNELS_COLLECTION, channelService } from './channel.service.js';
+import { CHANNELS_COLLECTION, channelService, channelMemberDocId, CHANNEL_MEMBERS_COLLECTION } from './channel.service.js';
 
-/**
- * v2 messages live in the `messages` collection (task spec 2.1 "messages v2").
- * Documents are distinguished from v1 relay records by the `channel_id` field;
- * v1 queries filter on `pair_id` / `relayed_at` and never collide.
- */
-export const MESSAGES_V2_COLLECTION = 'messages';
+/** SRD 3.7 — channel_messages/{messageId}. */
+export const CHANNEL_MESSAGES_COLLECTION = 'channel_messages';
 
 /** Spec §6.3: cap 1000 tin/ngày, vượt → trả 1000 tin mới nhất + truncated. */
 export const MESSAGES_DAY_CAP = 1000;
@@ -26,64 +21,58 @@ export interface MessageSendInput {
   channel_id: string;
   request_epoch: number;
   ciphertext: string;
-  iv: string;
-  sender_ephemeral_pubkey: string;
-  sent_at: string;
-  expires_at?: string;
+  nonce: string;
 }
 
 export interface MessageSendResult {
   message_id: string;
-  channel_id: string;
   sequence_number: number;
-  epoch: number;
   server_received_at: string;
 }
 
 export interface FetchedMessage {
-  message_id: string;
   channel_id: string;
   channel_name: string;
   sequence_number: number;
   key_epoch: number;
-  epoch: number;
   ciphertext: string;
-  iv: string;
-  sender_ephemeral_pubkey: string;
+  nonce: string;
   sender_device_id: string;
   sent_at: string;
   server_received_at: string;
 }
 
-function messageFromDocument(id: string, data: Record<string, unknown> | undefined): MessageV2Entity | null {
+function messageFromDocument(data: Record<string, unknown> | undefined): ChannelMessageEntity | null {
   if (!data || typeof data.channel_id !== 'string') return null;
   return {
-    message_id: typeof data.message_id === 'string' ? data.message_id : id,
+    message_id: String(data.message_id ?? ''),
     channel_id: data.channel_id,
     sequence_number: Number(data.sequence_number ?? 0),
-    epoch: Number(data.epoch ?? 0),
     ciphertext: String(data.ciphertext ?? ''),
-    iv: String(data.iv ?? ''),
-    sender_ephemeral_pubkey: String(data.sender_ephemeral_pubkey ?? ''),
+    nonce: String(data.nonce ?? ''),
+    key_epoch: Number(data.key_epoch ?? 0),
     sender_device_id: String(data.sender_device_id ?? ''),
-    sent_at: String(data.sent_at ?? nowIso()),
-    created_at: String(data.created_at ?? nowIso()),
-    expires_at: data.expires_at as string | undefined
+    sent_at: String(data.sent_at ?? ''),
+    server_received_at: String(data.server_received_at ?? nowIso())
   };
 }
 
 export class MessageV2Service {
   /**
-   * T5 + T3 (Owner only): anti-replay first, then inside the transaction
-   * verify `request_epoch == current_epoch` (KL7) and allocate the sequence
-   * number atomically via `sequence_counter` increment (N6).
+   * T5 + T3 (API spec §6.2, Owner only). Order: rate limit (middleware) →
+   * T5 anti-replay sha256(channel_id|nonce|ciphertext) TTL 24h → T3 check
+   * request_epoch == current_epoch (KL7) → atomic sequence_counter increment
+   * → persist. Ciphertext is opaque; the server never sees keys (KL1).
    */
   public async sendMessage(ownerId: string, input: MessageSendInput): Promise<MessageSendResult> {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
     // T5 (defense-in-depth, runs before T3): sha256(channel_id|nonce|ciphertext)
-    if (replayGuardService.checkAndRecord(input.channel_id, input.iv, input.ciphertext)) {
+    const replayHash = createHash('sha256')
+      .update(`${input.channel_id}|${input.nonce}|${input.ciphertext}`)
+      .digest('hex');
+    if (replayGuardService.checkAndRecordHash(replayHash)) {
       throw new HttpError(409, 'REPLAY_DETECTED', 'This ciphertext has already been accepted within the last 24 hours');
     }
 
@@ -99,7 +88,7 @@ export class MessageV2Service {
       if (String(channelData.owner_device_id ?? '') !== ownerId) {
         throw new HttpError(403, 'FORBIDDEN', 'Only the channel owner can send messages');
       }
-      if (channelData.is_active === false) {
+      if (channelData.status === 'ARCHIVED') {
         throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
       }
       const currentEpoch = Number(channelData.current_epoch ?? 1);
@@ -111,29 +100,25 @@ export class MessageV2Service {
       const messageId = randomUUID();
 
       tx.update(channelRef, {
-        sequence_counter: admin.firestore.FieldValue.increment(1),
+        sequence_counter: sequenceNumber,
         updated_at: serverReceivedAt
       });
 
-      tx.set(db.collection(MESSAGES_V2_COLLECTION).doc(messageId), {
+      tx.set(db.collection(CHANNEL_MESSAGES_COLLECTION).doc(messageId), {
         message_id: messageId,
         channel_id: input.channel_id,
         sequence_number: sequenceNumber,
-        epoch: currentEpoch,
         ciphertext: input.ciphertext,
-        iv: input.iv,
-        sender_ephemeral_pubkey: input.sender_ephemeral_pubkey,
+        nonce: input.nonce,
+        key_epoch: currentEpoch,
         sender_device_id: ownerId,
-        sent_at: input.sent_at,
-        created_at: serverReceivedAt,
-        ...(input.expires_at ? { expires_at: input.expires_at } : {})
+        sent_at: serverReceivedAt,
+        server_received_at: serverReceivedAt
       });
 
       return {
         message_id: messageId,
-        channel_id: input.channel_id,
         sequence_number: sequenceNumber,
-        epoch: currentEpoch,
         server_received_at: serverReceivedAt
       };
     });
@@ -142,7 +127,7 @@ export class MessageV2Service {
     return result;
   }
 
-  /** FCM wake-up bell to ACTIVE members (never carries ciphertext — I5). */
+  /** FCM wake-up bell to ACTIVE members (never carries ciphertext — I5/N8). */
   private async notifyNewMessage(channelId: string, senderDeviceId: string): Promise<void> {
     try {
       const members = await channelService.listActiveMembers(channelId);
@@ -154,8 +139,8 @@ export class MessageV2Service {
             if (!device?.fcm_token) return;
             await fcmService.sendDataNotification(device.fcm_token, {
               type: 'CHANNEL_EVENT',
-              kind: 'NEW_MESSAGE',
-              channel_id: channelId
+              channel_id: channelId,
+              kind: 'NEW_MESSAGE'
             });
           })
       );
@@ -167,8 +152,10 @@ export class MessageV2Service {
   }
 
   /**
-   * Q2 → Q4: fetch by day, channel-agnostic, across every channel the caller
-   * is an ACTIVE member of (KL12). Revoked channels are silently excluded.
+   * Q2 → Q4 (API spec §6.3): fetch by day, channel-agnostic, across every
+   * channel the caller is an ACTIVE member of (KL12). Revoked channels are
+   * silently excluded. Filter boundary = `date` + `tz_offset` minutes on
+   * `server_received_at`; sort ascending; cap 1000 newest + truncated flag.
    */
   public async fetchMessagesByDate(
     deviceId: string,
@@ -184,7 +171,7 @@ export class MessageV2Service {
     }
 
     const memberships = await db
-      .collection('channel_members')
+      .collection(CHANNEL_MEMBERS_COLLECTION)
       .where('device_id', '==', deviceId)
       .where('status', '==', 'ACTIVE')
       .get();
@@ -198,23 +185,23 @@ export class MessageV2Service {
     const fromIso = msToIso(range.fromMs);
     const toIso = msToIso(range.toMs);
 
-    const entities: MessageV2Entity[] = [];
+    const entities: ChannelMessageEntity[] = [];
     for (let i = 0; i < channelIds.length; i += IN_BATCH_SIZE) {
       const batch = channelIds.slice(i, i + IN_BATCH_SIZE);
       const snapshot = await db
-        .collection(MESSAGES_V2_COLLECTION)
+        .collection(CHANNEL_MESSAGES_COLLECTION)
         .where('channel_id', 'in', batch)
-        .where('created_at', '>=', fromIso)
-        .where('created_at', '<=', toIso)
+        .where('server_received_at', '>=', fromIso)
+        .where('server_received_at', '<=', toIso)
         .get();
       for (const doc of snapshot.docs) {
-        const entity = messageFromDocument(doc.id, doc.data());
+        const entity = messageFromDocument(doc.data());
         if (entity) entities.push(entity);
       }
     }
 
     entities.sort(
-      (a, b) => a.created_at.localeCompare(b.created_at) || a.sequence_number - b.sequence_number
+      (a, b) => a.server_received_at.localeCompare(b.server_received_at) || a.sequence_number - b.sequence_number
     );
 
     const truncated = entities.length > MESSAGES_DAY_CAP;
@@ -223,22 +210,19 @@ export class MessageV2Service {
     const channelNameById = new Map<string, string>();
     for (const channelId of channelIds) {
       const channel = await channelService.findChannelById(channelId);
-      if (channel) channelNameById.set(channelId, channel.channel_name);
+      if (channel) channelNameById.set(channelId, channel.name);
     }
 
     const messages: FetchedMessage[] = capped.map((entity) => ({
-      message_id: entity.message_id,
       channel_id: entity.channel_id,
       channel_name: channelNameById.get(entity.channel_id) ?? '',
       sequence_number: entity.sequence_number,
-      key_epoch: entity.epoch,
-      epoch: entity.epoch,
+      key_epoch: entity.key_epoch,
       ciphertext: entity.ciphertext,
-      iv: entity.iv,
-      sender_ephemeral_pubkey: entity.sender_ephemeral_pubkey,
+      nonce: entity.nonce,
       sender_device_id: entity.sender_device_id,
       sent_at: entity.sent_at,
-      server_received_at: entity.created_at
+      server_received_at: entity.server_received_at
     }));
 
     return { date, messages, truncated };
@@ -247,12 +231,8 @@ export class MessageV2Service {
   public async clearAll(): Promise<void> {
     const db = getFirestoreDb();
     if (!db) return;
-    const snapshot = await db.collection(MESSAGES_V2_COLLECTION).get();
-    await Promise.all(
-      snapshot.docs
-        .filter((doc) => typeof doc.data()?.channel_id === 'string')
-        .map((doc) => doc.ref.delete())
-    );
+    const snapshot = await db.collection(CHANNEL_MESSAGES_COLLECTION).get();
+    await Promise.all(snapshot.docs.map((doc) => doc.ref.delete()));
   }
 }
 
