@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { AnyZodObject, ZodError } from 'zod';
+import { logger } from '../utils/logger.js';
 
 export const validateBody = (schema: AnyZodObject) => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -8,14 +9,22 @@ export const validateBody = (schema: AnyZodObject) => {
       next();
     } catch (error) {
       if (error instanceof ZodError) {
+        const details = error.errors.map((err) => ({
+          field: err.path.join('.'),
+          message: err.message
+        }));
+
+        logger.warn(`[Validation Error] ${req.method} ${req.originalUrl} payload validation failed`, {
+          ip: req.ip,
+          deviceId: req.device?.device_id,
+          details
+        });
+
         res.status(400).json({
           success: false,
           error: 'VALIDATION_ERROR',
           message: 'Invalid request payload',
-          details: error.errors.map((err) => ({
-            field: err.path.join('.'),
-            message: err.message
-          }))
+          details
         });
         return;
       }
@@ -31,14 +40,22 @@ export const validateParams = (schema: AnyZodObject) => {
       next();
     } catch (error) {
       if (error instanceof ZodError) {
+        const details = error.errors.map((err) => ({
+          field: err.path.join('.'),
+          message: err.message
+        }));
+
+        logger.warn(`[Validation Error] ${req.method} ${req.originalUrl} URL parameters validation failed`, {
+          ip: req.ip,
+          deviceId: req.device?.device_id,
+          details
+        });
+
         res.status(400).json({
           success: false,
           error: 'INVALID_PARAMETERS',
           message: 'Invalid URL parameters',
-          details: error.errors.map((err) => ({
-            field: err.path.join('.'),
-            message: err.message
-          }))
+          details
         });
         return;
       }
@@ -55,14 +72,22 @@ export const validateQuery = (schema: AnyZodObject) => {
       next();
     } catch (error) {
       if (error instanceof ZodError) {
+        const details = error.errors.map((err) => ({
+          field: err.path.join('.'),
+          message: err.message
+        }));
+
+        logger.warn(`[Validation Error] ${req.method} ${req.originalUrl} query validation failed`, {
+          ip: req.ip,
+          deviceId: req.device?.device_id,
+          details
+        });
+
         res.status(400).json({
           success: false,
           error: 'VALIDATION_ERROR',
           message: 'Invalid query parameters',
-          details: error.errors.map((err) => ({
-            field: err.path.join('.'),
-            message: err.message
-          }))
+          details
         });
         return;
       }

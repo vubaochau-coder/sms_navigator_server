@@ -5,19 +5,29 @@ import { env } from './config/env.js';
 import { apiV1Routes } from './routes/api.routes.js';
 import { apiV2Routes } from './routes/v2.routes.js';
 import { errorHandler } from './middlewares/error.middleware.js';
+import { logger } from './utils/logger.js';
 
-export function createApp(): express.Application {  const app = express();
+export function createApp(): express.Application {
+  const app = express();
 
   // Trust reverse proxy headers from Render/Cloudflare for rate limiter and client IP
   app.set('trust proxy', 1);
 
-  // Simple HTTP request logger
+  // HTTP request logger with status and duration
   app.use((req: Request, res: Response, next) => {
     const start = Date.now();
     res.on('finish', () => {
       const duration = Date.now() - start;
-      // eslint-disable-next-line no-console
-      console.log(`[HTTP] ${req.method} ${req.originalUrl} ${res.statusCode} - ${duration}ms`);
+      const deviceStr = req.device?.device_id ? ` [device: ${req.device.device_id.slice(0, 8)}]` : '';
+      const logMessage = `[HTTP] ${req.method} ${req.originalUrl} ${res.statusCode} - ${duration}ms${deviceStr}`;
+
+      if (res.statusCode >= 500) {
+        logger.error(logMessage);
+      } else if (res.statusCode >= 400) {
+        logger.warn(logMessage);
+      } else {
+        logger.info(logMessage);
+      }
     });
     next();
   });
@@ -43,6 +53,7 @@ export function createApp(): express.Application {  const app = express();
 
   // 404 Handler
   app.use((req: Request, res: Response) => {
+    logger.warn(`[404 Not Found] ${req.method} ${req.originalUrl}`, { ip: req.ip });
     res.status(404).json({
       success: false,
       error: 'NOT_FOUND',
