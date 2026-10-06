@@ -377,11 +377,9 @@ export class ChannelService {
     const now = nowIso();
 
     await db.runTransaction(async (tx) => {
+      // All reads must precede writes (Firestore transaction invariant)
       const deviceRef = db.collection(DEVICES_COLLECTION).doc(deviceId);
       const deviceDoc = await tx.get(deviceRef);
-      if (deviceDoc.exists) {
-        tx.update(deviceRef, { device_name: deviceName, last_seen_at: now });
-      }
 
       const memberships = await tx.get(
         db
@@ -389,9 +387,6 @@ export class ChannelService {
           .where('device_id', '==', deviceId)
           .where('status', '==', 'ACTIVE')
       );
-      for (const doc of memberships.docs) {
-        tx.update(doc.ref, { device_name: deviceName });
-      }
 
       const pendingRequests = await tx.get(
         db
@@ -399,6 +394,16 @@ export class ChannelService {
           .where('requester_device_id', '==', deviceId)
           .where('status', '==', 'PENDING')
       );
+
+      // Writes executed after all reads have completed
+      if (deviceDoc.exists) {
+        tx.update(deviceRef, { device_name: deviceName, last_seen_at: now });
+      }
+
+      for (const doc of memberships.docs) {
+        tx.update(doc.ref, { device_name: deviceName });
+      }
+
       for (const doc of pendingRequests.docs) {
         tx.update(doc.ref, { requester_device_name: deviceName });
       }

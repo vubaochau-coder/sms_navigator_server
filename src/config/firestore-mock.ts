@@ -282,6 +282,9 @@ export class MockTransaction {
   private readonly operations: Array<() => Promise<void>> = [];
 
   public async get(ref: MockDocumentReference | MockQuery): Promise<MockDocumentSnapshot | MockQuerySnapshot> {
+    if (this.operations.length > 0) {
+      throw new Error('Firestore transactions require all reads to be executed before all writes');
+    }
     return ref.get();
   }
 
