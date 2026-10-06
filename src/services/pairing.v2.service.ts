@@ -10,7 +10,7 @@ import { getFirestoreDb } from '../config/firebase.js';
 import { env } from '../config/env.js';
 import { nowIso } from '../utils/time.js';
 import { HttpError } from '../utils/http-error.js';
-import { sha256Hex } from './device.service.js';
+import { sha256Hex, DEVICES_COLLECTION } from './device.service.js';
 import {
   CHANNELS_COLLECTION,
   CHANNEL_MEMBERS_COLLECTION,
@@ -160,6 +160,13 @@ export class PairingV2Service {
         throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
       }
 
+      // Read owner device BEFORE writes to guarantee all reads precede writes
+      let ownerDeviceName = '';
+      if (channel.owner_device_id) {
+        const ownerDoc = await tx.get(db.collection(DEVICES_COLLECTION).doc(channel.owner_device_id));
+        ownerDeviceName = String(ownerDoc.data()?.device_name ?? '');
+      }
+
       const requestId = randomUUID();
       tx.update(sessionRef, {
         status: 'CLAIMED',
@@ -181,16 +188,9 @@ export class PairingV2Service {
         request_id: requestId,
         channel_id: channelId,
         channel_name: String(channel.name ?? ''),
-        owner_device_name: await this.deviceName(channel.owner_device_id ?? '')
+        owner_device_name: ownerDeviceName
       };
     });
-  }
-
-  private async deviceName(deviceId: string): Promise<string> {
-    const db = getFirestoreDb();
-    if (!db) return '';
-    const doc = await db.collection('devices').doc(deviceId).get();
-    return String(doc.data()?.device_name ?? '');
   }
 
   /** GET /pairing/requests/mine (API spec §5.2): requests sent by the caller. */
