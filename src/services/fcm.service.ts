@@ -1,6 +1,8 @@
-import * as admin from 'firebase-admin';
+import { getMessaging } from 'firebase-admin/messaging';
+import type { Message } from 'firebase-admin/messaging';
 import { env } from '../config/env.js';
 import { initFirebase } from '../config/firebase.js';
+import { logger } from '../utils/logger.js';
 
 export interface FcmRelayMessageParams {
   fcmToken: string;
@@ -21,10 +23,9 @@ export interface FcmRelayAckParams {
 }
 
 export class FcmService {
-  private adminSdk: typeof admin;
-
   constructor() {
-    this.adminSdk = initFirebase();
+    // Ensures the Admin SDK is initialized before the first send attempt
+    initFirebase();
   }
 
   public async sendRelayDataMessage(params: FcmRelayMessageParams): Promise<string> {
@@ -33,8 +34,7 @@ export class FcmService {
     // Check for mock mode or testing
     if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
       const mockMessageId = `mock_msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      // eslint-disable-next-line no-console
-      console.log(`[FCM-Mock] Relaying data message for pair ${pairId} -> token ${fcmToken.substring(0, 10)}... (msgId: ${mockMessageId})`);
+      logger.info(`[FCM-Mock] Relaying data message for pair ${pairId} -> token ${fcmToken.substring(0, 10)}... (msgId: ${mockMessageId})`);
       return mockMessageId;
     }
 
@@ -50,7 +50,7 @@ export class FcmService {
       data.message_id = relayMessageId;
     }
 
-    const message: admin.messaging.Message = {
+    const message: Message = {
       token: fcmToken,
       // Notification block: guarantees Android displays a system notification
       // even when the app is backgrounded/killed and the OEM blocks spawning
@@ -68,7 +68,7 @@ export class FcmService {
     };
 
     try {
-      const messageId = await this.adminSdk.messaging().send(message);
+      const messageId = await getMessaging().send(message);
       return messageId;
     } catch (error: any) {
       // Check if error is related to invalid/unregistered token
@@ -87,8 +87,7 @@ export class FcmService {
 
     if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
       const mockMessageId = `mock_ack_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      // eslint-disable-next-line no-console
-      console.log(`[FCM-Mock] Sending relay ACK for pair ${pairId} -> token ${fcmToken.substring(0, 10)}... (msgId: ${mockMessageId})`);
+      logger.info(`[FCM-Mock] Sending relay ACK for pair ${pairId} -> token ${fcmToken.substring(0, 10)}... (msgId: ${mockMessageId})`);
       return mockMessageId;
     }
 
@@ -104,7 +103,7 @@ export class FcmService {
     }
 
     const target = (receiverName ?? '').trim() || 'Máy Nhận';
-    const message: admin.messaging.Message = {
+    const message: Message = {
       token: fcmToken,
       // System notification fallback so the sender sees the ACK even when its
       // app is backgrounded/killed and cannot run the background isolate.
@@ -126,7 +125,7 @@ export class FcmService {
     };
 
     try {
-      const messageId = await this.adminSdk.messaging().send(message);
+      const messageId = await getMessaging().send(message);
       return messageId;
     } catch (error: any) {
       if (
@@ -146,12 +145,11 @@ export class FcmService {
   ): Promise<string> {
     if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
       const mockMessageId = `mock_msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      // eslint-disable-next-line no-console
-      console.log(`[FCM-Mock] Data notification (${data.type || 'UNKNOWN'}) -> token ${fcmToken.substring(0, 10)}... (msgId: ${mockMessageId})`);
+      logger.info(`[FCM-Mock] Data notification (${data.type || 'UNKNOWN'}) -> token ${fcmToken.substring(0, 10)}... (msgId: ${mockMessageId})`);
       return mockMessageId;
     }
 
-    const message: admin.messaging.Message = {
+    const message: Message = {
       token: fcmToken,
       data,
       android: {
@@ -165,11 +163,10 @@ export class FcmService {
     }
 
     try {
-      return await this.adminSdk.messaging().send(message);
+      return await getMessaging().send(message);
     } catch (error) {
       // Best-effort notification delivery, do not crash business flow
-      // eslint-disable-next-line no-console
-      console.warn('[FCM] Warning: Failed to send data notification:', error);
+      logger.warn('[FCM] Failed to send data notification:', { error: String(error) });
       return '';
     }
   }

@@ -6,7 +6,8 @@ import { HttpError } from '../utils/http-error.js';
 import { replayGuardService } from './replay-guard.service.js';
 import { deviceService } from './device.service.js';
 import { fcmService } from './fcm.service.js';
-import { CHANNELS_COLLECTION, channelService, channelMemberDocId, CHANNEL_MEMBERS_COLLECTION } from './channel.service.js';
+import { logger } from '../utils/logger.js';
+import { CHANNELS_COLLECTION, channelService, CHANNEL_MEMBERS_COLLECTION } from './channel.service.js';
 
 /** SRD 3.7 — channel_messages/{messageId}. */
 export const CHANNEL_MESSAGES_COLLECTION = 'channel_messages';
@@ -130,24 +131,27 @@ export class MessageV2Service {
   /** FCM wake-up bell to ACTIVE members (never carries ciphertext — I5/N8). */
   private async notifyNewMessage(channelId: string, senderDeviceId: string): Promise<void> {
     try {
-      const members = await channelService.listActiveMembers(channelId);
+      const members = (await channelService.listActiveMembers(channelId)).filter(
+        (member) => member.device_id !== senderDeviceId
+      );
+      if (members.length === 0) return;
+
+      // One batched round of device reads instead of one per member
+      const devices = await Promise.all(members.map((member) => deviceService.findByDeviceId(member.device_id)));
       await Promise.all(
-        members
-          .filter((member) => member.device_id !== senderDeviceId)
-          .map(async (member) => {
-            const device = await deviceService.findByDeviceId(member.device_id);
-            if (!device?.fcm_token) return;
-            await fcmService.sendDataNotification(device.fcm_token, {
+        devices
+          .filter((device): device is NonNullable<typeof device> => device?.fcm_token !== undefined)
+          .map((device) =>
+            fcmService.sendDataNotification(device.fcm_token!, {
               type: 'CHANNEL_EVENT',
               channel_id: channelId,
               kind: 'NEW_MESSAGE'
-            });
-          })
+            })
+          )
       );
     } catch (error) {
       // Best-effort: FCM is a wake-up signal, never part of the consistency path (N8)
-      // eslint-disable-next-line no-console
-      console.warn('[MessageV2] Failed to send NEW_MESSAGE bells:', error);
+      logger.warn('[MessageV2] Failed to send NEW_MESSAGE bells:', { error: String(error) });
     }
   }
 
@@ -207,10 +211,11 @@ export class MessageV2Service {
     const truncated = entities.length > MESSAGES_DAY_CAP;
     const capped = truncated ? entities.slice(-MESSAGES_DAY_CAP) : entities;
 
+    // Batched channel-name lookup (no per-channel sequential read)
+    const channelDocs = await Promise.all(channelIds.map((id) => channelService.findChannelById(id)));
     const channelNameById = new Map<string, string>();
-    for (const channelId of channelIds) {
-      const channel = await channelService.findChannelById(channelId);
-      if (channel) channelNameById.set(channelId, channel.name);
+    for (const channel of channelDocs) {
+      if (channel) channelNameById.set(channel.channel_id, channel.name);
     }
 
     const messages: FetchedMessage[] = capped.map((entity) => ({

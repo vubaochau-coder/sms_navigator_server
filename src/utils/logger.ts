@@ -74,7 +74,6 @@ export const logger = {
 
   debug(message: string, meta?: Record<string, unknown>): void {
     if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
       console.debug(formatLogMessage('DEBUG', message, meta));
     }
   }

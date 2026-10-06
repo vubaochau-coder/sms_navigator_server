@@ -2,10 +2,28 @@ import { Request, Response, NextFunction } from 'express';
 import { AnyZodObject, ZodError } from 'zod';
 import { logger } from '../utils/logger.js';
 
-export const validateBody = (schema: AnyZodObject) => {
+interface ValidateOptions {
+  /** HTTP status error code returned in the error envelope. */
+  errorCode: string;
+  /** Human-readable reason returned to the client. */
+  message: string;
+  /** Log label identifying the request part that failed. */
+  label: string;
+}
+
+/**
+ * Shared zod-validation middleware factory. v2 convention (spec §1): GET
+ * endpoints carry every parameter in the query string, POST/PUT in the body.
+ */
+function createValidator(
+  schema: AnyZodObject,
+  extract: (req: Request) => unknown,
+  assign: (req: Request, parsed: unknown) => void,
+  options: ValidateOptions
+) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      req.body = await schema.parseAsync(req.body);
+      assign(req, await schema.parseAsync(extract(req)));
       next();
     } catch (error) {
       if (error instanceof ZodError) {
@@ -14,7 +32,7 @@ export const validateBody = (schema: AnyZodObject) => {
           message: err.message
         }));
 
-        logger.warn(`[Validation Error] ${req.method} ${req.originalUrl} payload validation failed`, {
+        logger.warn(`[Validation Error] ${req.method} ${req.originalUrl} ${options.label} failed`, {
           ip: req.ip,
           deviceId: req.device?.device_id,
           details
@@ -22,8 +40,8 @@ export const validateBody = (schema: AnyZodObject) => {
 
         res.status(400).json({
           success: false,
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid request payload',
+          error: options.errorCode,
+          message: options.message,
           details
         });
         return;
@@ -31,67 +49,34 @@ export const validateBody = (schema: AnyZodObject) => {
       next(error);
     }
   };
-};
+}
 
-export const validateParams = (schema: AnyZodObject) => {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      req.params = await schema.parseAsync(req.params);
-      next();
-    } catch (error) {
-      if (error instanceof ZodError) {
-        const details = error.errors.map((err) => ({
-          field: err.path.join('.'),
-          message: err.message
-        }));
+export const validateBody = (schema: AnyZodObject) =>
+  createValidator(
+    schema,
+    (req) => req.body,
+    (req, parsed) => {
+      req.body = parsed;
+    },
+    { errorCode: 'VALIDATION_ERROR', message: 'Invalid request payload', label: 'payload validation' }
+  );
 
-        logger.warn(`[Validation Error] ${req.method} ${req.originalUrl} URL parameters validation failed`, {
-          ip: req.ip,
-          deviceId: req.device?.device_id,
-          details
-        });
+export const validateParams = (schema: AnyZodObject) =>
+  createValidator(
+    schema,
+    (req) => req.params,
+    (req, parsed) => {
+      req.params = parsed as typeof req.params;
+    },
+    { errorCode: 'INVALID_PARAMETERS', message: 'Invalid URL parameters', label: 'URL parameters validation' }
+  );
 
-        res.status(400).json({
-          success: false,
-          error: 'INVALID_PARAMETERS',
-          message: 'Invalid URL parameters',
-          details
-        });
-        return;
-      }
-      next(error);
-    }
-  };
-};
-
-/** v2 convention (spec §1): GET endpoints carry every parameter in the query string. */
-export const validateQuery = (schema: AnyZodObject) => {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      req.query = (await schema.parseAsync(req.query)) as typeof req.query;
-      next();
-    } catch (error) {
-      if (error instanceof ZodError) {
-        const details = error.errors.map((err) => ({
-          field: err.path.join('.'),
-          message: err.message
-        }));
-
-        logger.warn(`[Validation Error] ${req.method} ${req.originalUrl} query validation failed`, {
-          ip: req.ip,
-          deviceId: req.device?.device_id,
-          details
-        });
-
-        res.status(400).json({
-          success: false,
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid query parameters',
-          details
-        });
-        return;
-      }
-      next(error);
-    }
-  };
-};
+export const validateQuery = (schema: AnyZodObject) =>
+  createValidator(
+    schema,
+    (req) => req.query,
+    (req, parsed) => {
+      req.query = parsed as typeof req.query;
+    },
+    { errorCode: 'VALIDATION_ERROR', message: 'Invalid query parameters', label: 'query validation' }
+  );

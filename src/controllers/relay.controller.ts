@@ -5,6 +5,7 @@ import { fcmService } from '../services/fcm.service.js';
 import { replayGuardService } from '../services/replay-guard.service.js';
 import { RelayHistoryRecord, RelayPayloadRequest, RelayPayloadResponse } from '../types/index.js';
 import { nowIso, msToIso, isoToMs, dayRange, parseTzOffsetMinutes } from '../utils/time.js';
+import { logger } from '../utils/logger.js';
 
 // Device clocks drift: accept payloads stamped up to 2 minutes in the
 // future, and extend the effective TTL by the same buffer before declaring
@@ -203,8 +204,7 @@ export class RelayController {
         status
       });
     } catch (error: any) {
-      // eslint-disable-next-line no-console
-      console.warn('[RelayController] Failed to send relay ACK to sender:', error?.message || error);
+      logger.warn('[RelayController] Failed to send relay ACK to sender:', { error: error?.message || String(error) });
     }
   }
 

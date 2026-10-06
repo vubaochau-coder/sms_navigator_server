@@ -28,24 +28,7 @@ export class ReplayGuardService {
    * ghi nhận và trả về false.
    */
   checkAndRecord(pairId: string, iv: string, encryptedPayload: string): boolean {
-    const fingerprint = ReplayGuardService.fingerprint(pairId, iv, encryptedPayload);
-    this.evictExpired();
-
-    const existingExpiry = this.entries.get(fingerprint);
-    if (existingExpiry !== undefined && existingExpiry > this.now()) {
-      return true;
-    }
-
-    if (this.entries.size >= this.maxEntries) {
-      // Bỏ qua các entry cũ nhất (Map giữ thứ tự chèn) để giới hạn bộ nhớ.
-      const oldestKey = this.entries.keys().next().value;
-      if (oldestKey !== undefined) {
-        this.entries.delete(oldestKey);
-      }
-    }
-
-    this.entries.set(fingerprint, this.now() + this.ttlMs);
-    return false;
+    return this.checkAndRecordHash(ReplayGuardService.fingerprint(pairId, iv, encryptedPayload));
   }
 
   /** Fingerprint cố định theo cặp (pair_id, iv, ciphertext). */
@@ -69,6 +52,7 @@ export class ReplayGuardService {
     }
 
     if (this.entries.size >= this.maxEntries) {
+      // Bỏ qua các entry cũ nhất (Map giữ thứ tự chèn) để giới hạn bộ nhớ.
       const oldestKey = this.entries.keys().next().value;
       if (oldestKey !== undefined) {
         this.entries.delete(oldestKey);

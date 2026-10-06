@@ -35,6 +35,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   }
 
   req.device = device;
-  void deviceService.touchDevice(device.device_id);
+  // Throttled inside touchDevice — at most one write per minute per device
+  void deviceService.touchDevice(device.device_id, device.last_seen_at);
   next();
 }

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import {
   ChannelEntity,
   MemberStatus,
@@ -207,20 +207,26 @@ export class PairingV2Service {
       .map((doc) => requestFromDocument(doc.data()))
       .filter((request): request is PairingRequestEntity => request !== null)
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    if (requests.length === 0) return [];
 
-    const result: Array<Record<string, unknown>> = [];
-    for (const request of requests) {
-      const channelDoc = await db.collection(CHANNELS_COLLECTION).doc(request.channel_id).get();
-      result.push({
-        request_id: request.request_id,
-        channel_id: request.channel_id,
-        channel_name: String(channelDoc.data()?.name ?? ''),
-        status: request.status,
-        created_at: request.created_at,
-        decided_at: request.decided_at
-      });
+    // Batched channel-name lookup (no per-request read)
+    const channelIds = [...new Set(requests.map((request) => request.channel_id))];
+    const channelDocs = await Promise.all(
+      channelIds.map((id) => db.collection(CHANNELS_COLLECTION).doc(id).get())
+    );
+    const channelNameById = new Map<string, string>();
+    for (const doc of channelDocs) {
+      channelNameById.set(doc.id, String(doc.data()?.name ?? ''));
     }
-    return result;
+
+    return requests.map((request) => ({
+      request_id: request.request_id,
+      channel_id: request.channel_id,
+      channel_name: channelNameById.get(request.channel_id) ?? '',
+      status: request.status,
+      created_at: request.created_at,
+      decided_at: request.decided_at
+    }));
   }
 
   /** GET /channels/requests (API spec §5.3): Owner approval queue (Q1). */

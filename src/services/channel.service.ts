@@ -294,12 +294,32 @@ export class ChannelService {
     const memberships = membershipSnapshot.docs
       .map((doc) => memberFromDocument(doc.data()))
       .filter((member): member is ChannelMemberEntity => member !== null);
+    if (memberships.length === 0) return [];
+
+    // Batched reads: channels of interest, then their owners (no N+1 loops)
+    const channelIds = [...new Set(memberships.map((membership) => membership.channel_id))];
+    const channelDocs = await Promise.all(
+      channelIds.map((id) => db.collection(CHANNELS_COLLECTION).doc(id).get())
+    );
+    const channels = channelDocs
+      .map((doc) => channelFromDocument(doc.id, doc.data()))
+      .filter((channel): channel is ChannelEntity => channel !== null && channel.status === 'ACTIVE');
+    if (channels.length === 0) return [];
+
+    const ownerIds = [...new Set(channels.map((channel) => channel.owner_device_id))];
+    const ownerDocs = await Promise.all(
+      ownerIds.map((id) => db.collection(DEVICES_COLLECTION).doc(id).get())
+    );
+    const ownerNameById = new Map<string, string>();
+    for (const doc of ownerDocs) {
+      ownerNameById.set(doc.id, String(doc.data()?.device_name ?? ''));
+    }
+    const channelById = new Map(channels.map((channel) => [channel.channel_id, channel]));
 
     const items: ChannelListItem[] = [];
     for (const membership of memberships) {
-      const channel = await this.findChannelById(membership.channel_id);
-      if (!channel || channel.status !== 'ACTIVE') continue;
-      const ownerDevice = await this.findOwnerName(channel.owner_device_id);
+      const channel = channelById.get(membership.channel_id);
+      if (!channel) continue;
       items.push({
         channel_id: channel.channel_id,
         name: channel.name,
@@ -309,17 +329,10 @@ export class ChannelService {
         membership_version: channel.membership_version,
         member_count: channel.member_count,
         my_joined_epoch: membership.joined_epoch,
-        owner_device_name: ownerDevice
+        owner_device_name: ownerNameById.get(channel.owner_device_id) ?? ''
       });
     }
     return items.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  private async findOwnerName(ownerDeviceId: string): Promise<string> {
-    const db = getFirestoreDb();
-    if (!db) return '';
-    const doc = await db.collection(DEVICES_COLLECTION).doc(ownerDeviceId).get();
-    return String(doc.data()?.device_name ?? '');
   }
 
   /**
@@ -392,26 +405,6 @@ export class ChannelService {
     });
   }
 
-  /** Persist key envelopes for one epoch; doc ids `{channelId}__{deviceId}__{epoch}`. */
-  public async saveEnvelopes(
-    channelId: string,
-    epoch: number,
-    envelopes: Array<{ device_id: string; key_epoch: number; wrapped_key: string; nonce: string; kek_alg: string }>
-  ): Promise<void> {
-    const db = getFirestoreDb();
-    if (!db) return;
-    const now = nowIso();
-    await db.runTransaction(async (tx) => {
-      for (const envelope of envelopes) {
-        tx.set(db.collection(CHANNEL_KEY_ENVELOPES_COLLECTION).doc(envelopeDocId(channelId, envelope.device_id, epoch)), {
-          channel_id: channelId,
-          ...envelopeToDocInput(envelope),
-          created_at: now
-        });
-      }
-    });
-  }
-
   /**
    * GET /channels/key-envelope (API spec §6.1): envelope of the caller for the
    * given epoch; `epoch` omitted → highest provisioned epoch ("latest" mode,
@@ -422,10 +415,8 @@ export class ChannelService {
     deviceId: string,
     epoch: number | undefined
   ): Promise<ChannelKeyEnvelopeEntity> {
-    await this.requireActiveMember(channelId, deviceId);
-
-    const member = await this.getMember(channelId, deviceId);
-    const targetEpoch = epoch ?? member?.provisioned_epoch ?? 0;
+    const member = await this.requireActiveMember(channelId, deviceId);
+    const targetEpoch = epoch ?? member.provisioned_epoch ?? 0;
     if (targetEpoch < 1) {
       throw new HttpError(404, 'NOT_FOUND', 'No key envelope has been provisioned for you on this channel');
     }

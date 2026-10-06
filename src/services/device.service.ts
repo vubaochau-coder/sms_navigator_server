@@ -2,8 +2,12 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { DeviceEntity } from '../types/index.js';
 import { getFirestoreDb } from '../config/firebase.js';
 import { nowIso, toIsoString } from '../utils/time.js';
+import { logger } from '../utils/logger.js';
 
 export const DEVICES_COLLECTION = 'devices';
+
+/** Minimum gap between last_seen_at writes (see touchDevice). */
+export const MIN_TOUCH_INTERVAL_MS = 60_000;
 
 export function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -22,7 +26,7 @@ function toDocument(device: DeviceEntity): Record<string, unknown> {
     device_id: device.device_id,
     token_hash: device.token_hash,
     created_at: device.created_at,
-    last_active_at: device.last_active_at
+    last_seen_at: device.last_seen_at
   };
   if (device.public_key !== undefined) doc.public_key = device.public_key;
   if (device.device_name !== undefined) doc.device_name = device.device_name;
@@ -41,7 +45,8 @@ function fromDocument(id: string, data: Record<string, unknown> | undefined): De
     platform: data.platform as string | undefined,
     fcm_token: data.fcm_token as string | undefined,
     created_at: toIsoString(data.created_at),
-    last_active_at: toIsoString(data.last_active_at)
+    // SRD 3.1 field; fall back to the legacy last_active_at written before the rename
+    last_seen_at: toIsoString(data.last_seen_at ?? data.last_active_at)
   };
 }
 
@@ -67,7 +72,7 @@ export class DeviceService {
       platform: input.platform ?? existing?.platform,
       fcm_token: input.fcm_token ?? existing?.fcm_token,
       created_at: existing?.created_at ?? now,
-      last_active_at: now
+      last_seen_at: now
     };
 
     await db.collection(DEVICES_COLLECTION).doc(deviceId).set(toDocument(device));
@@ -124,28 +129,38 @@ export class DeviceService {
     if (!snapshot.exists) return null;
 
     const now = nowIso();
-    await docRef.update({ fcm_token: fcmToken, last_active_at: now });
+    await docRef.update({ fcm_token: fcmToken, last_seen_at: now });
 
     const device = fromDocument(deviceId, snapshot.data());
     if (device) {
       device.fcm_token = fcmToken;
-      device.last_active_at = now;
+      device.last_seen_at = now;
     }
     return device;
   }
 
-  public async touchDevice(deviceId: string): Promise<void> {
+  /**
+   * Writes last_seen_at at most once per MIN_TOUCH_INTERVAL_MS per device.
+   * `authenticate` calls this on every authenticated request — without the
+   * throttle that would be one Firestore write (and one hot-doc contention
+   * point) per request.
+   */
+  public async touchDevice(deviceId: string, lastSeenAt?: string, minIntervalMs = MIN_TOUCH_INTERVAL_MS): Promise<void> {
     const db = getFirestoreDb();
     if (!db) return;
+
+    const lastMs = lastSeenAt ? Date.parse(lastSeenAt) : 0;
+    if (Number.isFinite(lastMs) && Date.now() - lastMs < minIntervalMs) {
+      return;
+    }
 
     try {
       await db
         .collection(DEVICES_COLLECTION)
         .doc(deviceId)
-        .update({ last_active_at: nowIso() });
+        .update({ last_seen_at: nowIso() });
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn(`[DeviceService] Failed to touch device ${deviceId}:`, error);
+      logger.warn(`[DeviceService] Failed to touch device ${deviceId}:`, { error: String(error) });
     }
   }
 

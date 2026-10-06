@@ -40,7 +40,7 @@ export function createApp(): express.Application {
   app.use(
     cors({
       origin: parseCorsOrigins(env.CORS_ORIGIN),
-      methods: ['GET', 'POST', 'DELETE', 'OPTIONS']
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
     })
   );
   app.use(express.json({ limit: '1mb' }));

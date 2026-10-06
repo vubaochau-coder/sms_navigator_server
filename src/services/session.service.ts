@@ -1,4 +1,4 @@
-import type * as admin from 'firebase-admin';
+import type { Query } from 'firebase-admin/firestore';
 import {
   PairConfirmOutcome,
   PairEntity,
@@ -10,6 +10,7 @@ import {
 import { env } from '../config/env.js';
 import { getFirestoreDb } from '../config/firebase.js';
 import { nowIso, msToIso, isoToMs, toIsoString } from '../utils/time.js';
+import { logger } from '../utils/logger.js';
 import { sha256Hex } from './device.service.js';
 
 export const PAIRS_COLLECTION = 'pairs';
@@ -486,8 +487,7 @@ export class SessionService {
         removedCount++;
       }
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn('[SessionService] Failed to clean expired sessions:', error);
+      logger.warn('[SessionService] Failed to clean expired sessions:', { error: String(error) });
     }
 
     return removedCount;
@@ -535,7 +535,7 @@ export class SessionService {
     const fromIso = msToIso(options.fromMs);
     const toIso = msToIso(options.toMs);
 
-    let query: admin.firestore.Query = db.collection(MESSAGES_COLLECTION);
+    let query: Query = db.collection(MESSAGES_COLLECTION);
     if (options.pairId) {
       query = query.where('pair_id', '==', options.pairId);
     } else {

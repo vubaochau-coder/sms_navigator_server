@@ -1,50 +1,53 @@
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps, applicationDefault, cert } from 'firebase-admin/app';
+import * as firestoreAdmin from 'firebase-admin/firestore';
 import fs from 'fs';
 import { env } from './env.js';
+import { logger } from '../utils/logger.js';
 import { mockFirestore } from './firestore-mock.js';
 
 let isFirebaseInitialized = false;
-let cachedDb: admin.firestore.Firestore | null = null;
+let cachedDb: firestoreAdmin.Firestore | null = null;
 
-export function initFirebase(): typeof admin {
+export function initFirebase(): void {
   if (isFirebaseInitialized) {
-    return admin;
+    return;
   }
 
   if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
-    // eslint-disable-next-line no-console
-    console.log('[Firebase] Running in MOCK mode (No external FCM calls will be dispatched).');
+    logger.info('[Firebase] Running in MOCK mode (No external FCM calls will be dispatched).');
     isFirebaseInitialized = true;
-    return admin;
+    return;
   }
 
   try {
-    let credential: admin.credential.Credential | undefined;
+    let credential: ReturnType<typeof applicationDefault> | ReturnType<typeof cert>;
 
     if (env.FIREBASE_SERVICE_ACCOUNT_JSON) {
       const parsed = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON);
-      credential = admin.credential.cert(parsed);
+      credential = cert(parsed);
     } else if (env.FIREBASE_SERVICE_ACCOUNT_PATH && fs.existsSync(env.FIREBASE_SERVICE_ACCOUNT_PATH)) {
-      credential = admin.credential.cert(env.FIREBASE_SERVICE_ACCOUNT_PATH);
+      credential = cert(env.FIREBASE_SERVICE_ACCOUNT_PATH);
     } else {
       // Try Application Default Credentials (e.g. Google Cloud Run)
-      credential = admin.credential.applicationDefault();
+      credential = applicationDefault();
     }
 
-    admin.initializeApp({
+    initializeApp({
       credential
     });
 
     isFirebaseInitialized = true;
-    // eslint-disable-next-line no-console
-    console.log('[Firebase] Admin SDK initialized successfully.');
+    logger.info('[Firebase] Admin SDK initialized successfully.');
   } catch (error) {
-    // eslint-disable-next-line no-console
-    console.warn('[Firebase] Warning: Failed to initialize Firebase Admin SDK. Fallback to Mock mode.', error);
+    logger.error('[Firebase] Failed to initialize Firebase Admin SDK.', error);
+    if (env.NODE_ENV === 'production') {
+      // Fail fast: a prod server must never silently degrade to the in-memory
+      // mock (data would be accepted then lost on restart).
+      throw error;
+    }
+    logger.warn('[Firebase] Falling back to Mock mode (dev/test only).');
     isFirebaseInitialized = true;
   }
-
-  return admin;
 }
 
 /**
@@ -57,7 +60,7 @@ export function isFirebaseReady(): boolean {
   if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
     return false;
   }
-  return admin.apps.length > 0;
+  return getApps().length > 0;
 }
 
 /**
@@ -65,30 +68,34 @@ export function isFirebaseReady(): boolean {
  *
  * - In test / mock mode (`NODE_ENV === 'test'` or `FIREBASE_MOCK_MODE === 'true'`)
  *   an In-Memory Firestore adapter is returned so `npm test` runs 100% offline.
- * - In production the real `admin.firestore()` instance is used; if the SDK
- *   failed to initialize, `null` is returned (services fail closed).
+ * - In production the real Firestore instance is used; if the SDK failed to
+ *   initialize, `null` is returned (services fail closed).
  */
-export function getFirestoreDb(): admin.firestore.Firestore | null {
+export function getFirestoreDb(): firestoreAdmin.Firestore | null {
   if (cachedDb) {
     return cachedDb;
   }
 
   if (env.FIREBASE_MOCK_MODE || env.NODE_ENV === 'test') {
-    cachedDb = mockFirestore as unknown as admin.firestore.Firestore;
+    cachedDb = mockFirestore as unknown as firestoreAdmin.Firestore;
     return cachedDb;
   }
 
   try {
     initFirebase();
-    if (!admin.apps.length) {
+    if (getApps().length === 0) {
       return null;
     }
-    cachedDb = admin.firestore();
+    cachedDb = firestoreAdmin.getFirestore();
     return cachedDb;
   } catch (error) {
-    // eslint-disable-next-line no-console
-    console.warn('[Firestore] Warning: Firestore is unavailable. Falling back to In-Memory adapter.', error);
-    cachedDb = mockFirestore as unknown as admin.firestore.Firestore;
+    logger.error('[Firestore] Firestore is unavailable.', error);
+    if (env.NODE_ENV === 'production') {
+      // Fail fast: prod must never fall back to the in-memory mock.
+      throw error;
+    }
+    logger.warn('[Firestore] Falling back to In-Memory adapter (dev/test only).');
+    cachedDb = mockFirestore as unknown as firestoreAdmin.Firestore;
     return cachedDb;
   }
 }

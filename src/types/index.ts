@@ -6,7 +6,7 @@ export interface DeviceEntity {
   platform?: string;
   fcm_token?: string;
   created_at: string; // ISO 8601 UTC
-  last_active_at: string; // ISO 8601 UTC
+  last_seen_at: string; // ISO 8601 UTC (SRD 3.1); legacy docs may still carry last_active_at
 }
 
 export interface PairEntity {
@@ -69,6 +69,7 @@ export interface PairedSenderItem {
   is_active: boolean; // Read-only for receiver: indicates if sender has active relay or paused it
 }
 
+/* eslint-disable @typescript-eslint/no-namespace -- standard Express Request augmentation */
 declare global {
   namespace Express {
     interface Request {

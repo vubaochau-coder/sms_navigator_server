@@ -167,7 +167,7 @@ describe('SessionService Unit Tests', () => {
       created_at: staleCreatedAt,
       last_active_at: staleCreatedAt
     });
-    const confirmedPair = await sessionService.createPair(
+    await sessionService.createPair(
       'pair_confirmed_recent',
       'device_recent_sender',
       undefined,
