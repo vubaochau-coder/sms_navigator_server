@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'crypto';
 import {
   ChannelEntity,
+  ChannelMemberEntity,
   MemberStatus,
   PairingRequestEntity,
   PairingSessionEntity,
@@ -23,6 +24,13 @@ import {
 
 export const PAIRING_SESSIONS_COLLECTION = 'pairing_sessions';
 export const PAIRING_REQUESTS_COLLECTION = 'pairing_requests';
+/** One pending-join marker per (channel, requester) — dedup guard for T1. */
+export const PAIRING_PENDING_COLLECTION = 'pairing_pending';
+
+/** Document id per SRD 3.5b: `{channelId}__{requesterDeviceId}` (double underscore). */
+export function pairingPendingDocId(channelId: string, requesterDeviceId: string): string {
+  return `${channelId}__${requesterDeviceId}`;
+}
 
 /** N5/I9: QR invite is single-use with a 10-minute TTL. */
 export const SESSION_TTL_MS = 10 * 60 * 1000;
@@ -130,7 +138,11 @@ export class PairingV2Service {
   /**
    * T1 (API spec §5.1): member claims the QR. Transaction:
    * `pairing_sessions UNUSED && expires_at > now → CLAIMED` + create
-   * pairing_requests PENDING. Errors: 409 QR_ALREADY_USED, 410 QR_EXPIRED.
+   * pairing_requests PENDING. Errors: 409 QR_ALREADY_USED, 410 QR_EXPIRED,
+   * 409 ALREADY_MEMBER (caller is an ACTIVE member, owner included),
+   * 409 REQUEST_ALREADY_PENDING (same device already awaiting approval on
+   * this channel — enforced via the deterministic `pairing_pending` marker,
+   * so concurrent claims with different sessions cannot both commit).
    */
   public async claimSession(
     requesterDeviceId: string,
@@ -176,6 +188,33 @@ export class PairingV2Service {
         throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
       }
 
+      // Dedup rules (read-only phase — all reads precede writes):
+      // 1. ACTIVE member (owner included — Owner has a member doc since T0)
+      //    may not re-join. REVOKED may re-claim (reinstall policy SRD 8.2).
+      const memberDoc = await tx.get(
+        db.collection(CHANNEL_MEMBERS_COLLECTION).doc(channelMemberDocId(channelId, requesterDeviceId))
+      );
+      const member = memberDoc.data() as Partial<ChannelMemberEntity> | undefined;
+      if (memberDoc.exists && member?.status === 'ACTIVE') {
+        throw new HttpError(409, 'ALREADY_MEMBER', 'Your device has already joined this channel');
+      }
+
+      // 2. Same device already has a PENDING request on this channel. The
+      //    deterministic marker doc id serializes concurrent claims: two
+      //    transactions that both read the marker as absent still conflict
+      //    on commit when both write the same doc id, so only one survives.
+      const pendingRef = db
+        .collection(PAIRING_PENDING_COLLECTION)
+        .doc(pairingPendingDocId(channelId, requesterDeviceId));
+      const pendingDoc = await tx.get(pendingRef);
+      if (pendingDoc.exists) {
+        throw new HttpError(
+          409,
+          'REQUEST_ALREADY_PENDING',
+          'A join request from this device is already awaiting approval for this channel'
+        );
+      }
+
       // Read owner device BEFORE writes to guarantee all reads precede writes
       let ownerDeviceName = '';
       if (channel.owner_device_id) {
@@ -197,6 +236,12 @@ export class PairingV2Service {
         requester_device_name: deviceName,
         requester_public_key: requesterPublicKey,
         status: 'PENDING',
+        created_at: now
+      });
+      tx.set(pendingRef, {
+        channel_id: channelId,
+        requester_device_id: requesterDeviceId,
+        request_id: requestId,
         created_at: now
       });
 
@@ -325,6 +370,20 @@ export class PairingV2Service {
         throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
       }
 
+      // Safety (read-only phase): the requester must not already be ACTIVE —
+      // approving twice would corrupt member_count and re-rotate for nothing.
+      const requesterMemberDoc = await tx.get(
+        db.collection(CHANNEL_MEMBERS_COLLECTION).doc(channelMemberDocId(request.channel_id, request.requester_device_id))
+      );
+      const requesterMember = requesterMemberDoc.data() as Partial<ChannelMemberEntity> | undefined;
+      if (requesterMemberDoc.exists && requesterMember?.status === 'ACTIVE') {
+        throw new HttpError(409, 'ALREADY_MEMBER', 'This device has already joined this channel');
+      }
+
+      const pendingRef = db
+        .collection(PAIRING_PENDING_COLLECTION)
+        .doc(pairingPendingDocId(request.channel_id, request.requester_device_id));
+
       const membersSnapshot = await tx.get(
         db
           .collection(CHANNEL_MEMBERS_COLLECTION)
@@ -352,6 +411,7 @@ export class PairingV2Service {
         decided_at: now,
         terminal_at: now
       });
+      tx.delete(pendingRef);
 
       tx.set(db.collection(CHANNEL_MEMBERS_COLLECTION).doc(channelMemberDocId(request.channel_id, request.requester_device_id)), {
         channel_id: request.channel_id,
@@ -433,6 +493,11 @@ export class PairingV2Service {
         decided_at: now,
         terminal_at: now
       });
+      // Release the dedup marker: the device may claim a fresh QR later
+      // (a REJECTED request is not a ban — QR already burned by T6).
+      tx.delete(
+        db.collection(PAIRING_PENDING_COLLECTION).doc(pairingPendingDocId(request.channel_id, request.requester_device_id))
+      );
     });
   }
 
@@ -462,13 +527,16 @@ export class PairingV2Service {
         decided_at: now,
         terminal_at: now
       });
+      tx.delete(
+        db.collection(PAIRING_PENDING_COLLECTION).doc(pairingPendingDocId(request.channel_id, request.requester_device_id))
+      );
     });
   }
 
   public async clearAll(): Promise<void> {
     const db = getFirestoreDb();
     if (!db) return;
-    for (const name of [PAIRING_SESSIONS_COLLECTION, PAIRING_REQUESTS_COLLECTION]) {
+    for (const name of [PAIRING_SESSIONS_COLLECTION, PAIRING_REQUESTS_COLLECTION, PAIRING_PENDING_COLLECTION]) {
       const snapshot = await db.collection(name).get();
       await Promise.all(snapshot.docs.map((doc) => doc.ref.delete()));
     }

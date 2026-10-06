@@ -704,6 +704,178 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       expect(res.status).toBe(410);
       expect(res.body.error).toBe('QR_EXPIRED');
     });
+
+    it('409 ALREADY_MEMBER when an ACTIVE member claims a fresh QR of the same channel', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, member);
+
+      // Owner generates a new invite; the joined member claims it again
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      expect(sessionRes.status).toBe(201);
+
+      const res = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('ALREADY_MEMBER');
+    });
+
+    it('409 ALREADY_MEMBER when the owner claims the QR of their own channel', async () => {
+      const owner = await reg('Owner');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      const res = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(owner.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token,
+          device_name: owner.deviceName
+        });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('ALREADY_MEMBER');
+    });
+
+    it('409 REQUEST_ALREADY_PENDING when the same device claims a second QR of the channel', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+
+      const session1 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      const first = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session1.body.session_id,
+          pairing_token: session1.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(first.status).toBe(201);
+
+      // A second QR (created after the first claim) must not let the same
+      // device queue a duplicate PENDING request
+      const session2 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      expect(session2.status).toBe(201);
+
+      const second = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session2.body.session_id,
+          pairing_token: session2.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(second.status).toBe(409);
+      expect(second.body.error).toBe('REQUEST_ALREADY_PENDING');
+
+      // The owner queue still holds exactly one request
+      const queue = await request(server)
+        .get(`/api/v2/channels/requests?channel_id=${channelId}&status=PENDING`)
+        .set(bearer(owner.token));
+      expect(queue.body.requests).toHaveLength(1);
+    });
+
+    it('releases the dedup marker on cancel so the device can claim a fresh QR', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+
+      const session1 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      const first = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session1.body.session_id,
+          pairing_token: session1.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(first.status).toBe(201);
+
+      const cancel = await request(server)
+        .post('/api/v2/pairing/requests/cancel')
+        .set(bearer(member.token))
+        .send({ request_id: first.body.request_id });
+      expect(cancel.status).toBe(200);
+
+      const session2 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      const second = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session2.body.session_id,
+          pairing_token: session2.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(second.status).toBe(201);
+      expect(second.body.status).toBe('PENDING');
+    });
+
+    it('releases the dedup marker on reject so the device can claim a fresh QR', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+
+      const session1 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      const first = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session1.body.session_id,
+          pairing_token: session1.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(first.status).toBe(201);
+
+      const reject = await request(server)
+        .post('/api/v2/pairing/requests/reject')
+        .set(bearer(owner.token))
+        .send({ request_id: first.body.request_id });
+      expect(reject.status).toBe(200);
+
+      const session2 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      const second = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session2.body.session_id,
+          pairing_token: session2.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(second.status).toBe(201);
+      expect(second.body.status).toBe('PENDING');
+    });
   });
 
   describe('POST /api/v2/pairing/requests/approve (T2, §5.4)', () => {
