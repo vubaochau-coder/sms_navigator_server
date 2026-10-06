@@ -1,3 +1,5 @@
+/// <reference types="jest" />
+
 import request from 'supertest';
 import * as crypto from 'crypto';
 import { randomUUID } from 'crypto';
@@ -271,6 +273,38 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
         .set(bearer(member.token))
         .send({ device_name: 'Galaxy S23 của B' });
       expect(again.status).toBe(200);
+    });
+  });
+
+  describe('GET /api/v2/devices/me (§3.4)', () => {
+    it('requires a bearer token', async () => {
+      const res = await request(server).get('/api/v2/devices/me');
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('UNAUTHORIZED');
+    });
+
+    it('returns profile info for authenticated device', async () => {
+      const owner = await reg('Pixel 8 của Minh');
+      const res = await request(server)
+        .get('/api/v2/devices/me')
+        .set(bearer(owner.token));
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.device_id).toBe(owner.deviceId);
+      expect(res.body.device_name).toBe('Pixel 8 của Minh');
+      expect(res.body.platform).toBe('android');
+      expect(res.body.public_key).toBe(owner.publicKey);
+      expect(res.body.created_at).toBeDefined();
+    });
+
+    it('rejects invalid or unknown token with 401', async () => {
+      const res = await request(server)
+        .get('/api/v2/devices/me')
+        .set(bearer('invalid_token_1234567890abcdef'));
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('UNAUTHORIZED');
     });
   });
 

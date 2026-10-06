@@ -65,6 +65,14 @@ router.put(
   asyncHandler(DeviceV2Controller.updateFcmToken)
 );
 
+// GET /api/v2/devices/me — profile & token validity check
+router.get(
+  '/devices/me',
+  authenticate,
+  v2ReadRateLimiter,
+  asyncHandler(DeviceV2Controller.getMe)
+);
+
 // ---- Channels ---------------------------------------------------------------
 router.post(
   '/channels',

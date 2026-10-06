@@ -58,4 +58,20 @@ export class DeviceV2Controller {
 
     res.status(200).json({ success: true });
   }
+
+  /**
+   * GET /api/v2/devices/me (§3.4) — returns profile info of authenticated device.
+   * Useful for token verification on startup / splash screen.
+   */
+  public static async getMe(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    res.status(200).json({
+      success: true,
+      device_id: device.device_id,
+      device_name: device.device_name,
+      platform: device.platform,
+      public_key: device.public_key,
+      created_at: device.created_at
+    });
+  }
 }
