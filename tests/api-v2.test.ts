@@ -535,6 +535,53 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('NOT_OWNER');
     });
+
+    it('invalidates prior UNUSED sessions of the same channel upon creating a new session', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+
+      // Create session #1
+      const res1 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      expect(res1.status).toBe(201);
+      const session1 = res1.body;
+
+      // Create session #2 (must supersede session #1)
+      const res2 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      expect(res2.status).toBe(201);
+      const session2 = res2.body;
+      expect(session2.session_id).not.toBe(session1.session_id);
+
+      // Claiming session #1 now fails with 410 QR_EXPIRED
+      const claim1 = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session1.session_id,
+          pairing_token: session1.pairing_token,
+          device_name: 'Member Device'
+        });
+      expect(claim1.status).toBe(410);
+      expect(claim1.body.error).toBe('QR_EXPIRED');
+
+      // Claiming session #2 succeeds
+      const claim2 = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: session2.session_id,
+          pairing_token: session2.pairing_token,
+          device_name: 'Member Device'
+        });
+      expect(claim2.status).toBe(201);
+      expect(claim2.body.status).toBe('PENDING');
+    });
   });
 
   describe('POST /api/v2/pairing/requests (T1 claim, §5.1)', () => {

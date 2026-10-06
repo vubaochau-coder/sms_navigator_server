@@ -79,27 +79,43 @@ export class PairingV2Service {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
-    const channel = await db.collection(CHANNELS_COLLECTION).doc(channelId).get();
-    if (!channel.exists) {
-      throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
-    }
-    if (String(channel.data()?.owner_device_id ?? '') !== ownerId) {
-      throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can create invite sessions');
-    }
-
+    const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
     const sessionId = randomUUID();
     const pairingToken = randomBytes(16).toString('hex'); // 128-bit raw token
     const now = nowIso();
     const expiresAtMs = Date.now() + SESSION_TTL_MS;
     const expiresAt = new Date(expiresAtMs).toISOString();
 
-    await db.collection(PAIRING_SESSIONS_COLLECTION).doc(sessionId).set({
-      session_id: sessionId,
-      channel_id: channelId,
-      pairing_token_hash: sha256Hex(pairingToken),
-      status: 'UNUSED',
-      expires_at: expiresAt,
-      created_at: now
+    await db.runTransaction(async (tx) => {
+      // 1. Transaction reads: verify owner and query previous UNUSED sessions
+      const channel = await tx.get(channelRef);
+      if (!channel.exists) {
+        throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
+      }
+      if (String(channel.data()?.owner_device_id ?? '') !== ownerId) {
+        throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can create invite sessions');
+      }
+
+      const existingUnusedSnapshot = await tx.get(
+        db
+          .collection(PAIRING_SESSIONS_COLLECTION)
+          .where('channel_id', '==', channelId)
+          .where('status', '==', 'UNUSED')
+      );
+
+      // 2. Transaction writes (after all reads): invalidate prior UNUSED sessions
+      for (const doc of existingUnusedSnapshot.docs) {
+        tx.update(doc.ref, { status: 'EXPIRED' });
+      }
+
+      tx.set(db.collection(PAIRING_SESSIONS_COLLECTION).doc(sessionId), {
+        session_id: sessionId,
+        channel_id: channelId,
+        pairing_token_hash: sha256Hex(pairingToken),
+        status: 'UNUSED',
+        expires_at: expiresAt,
+        created_at: now
+      });
     });
 
     const inviteUrl =
