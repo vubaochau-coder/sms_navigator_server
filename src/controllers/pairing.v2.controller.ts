@@ -29,12 +29,19 @@ export class PairingV2Controller {
       if (channel) {
         const owner = await deviceService.findByDeviceId(channel.owner_device_id);
         if (owner?.fcm_token) {
-          await fcmService.sendDataNotification(owner.fcm_token, {
-            type: 'CHANNEL_EVENT',
-            channel_id: claimed.channel_id,
-            kind: 'JOIN_REQUEST',
-            requester_device_name: device_name
-          });
+          await fcmService.sendDataNotification(
+            owner.fcm_token,
+            {
+              type: 'CHANNEL_EVENT',
+              channel_id: claimed.channel_id,
+              kind: 'JOIN_REQUEST',
+              requester_device_name: device_name
+            },
+            {
+              title: 'Yêu cầu tham gia kênh',
+              body: `${device_name} muốn tham gia kênh.`
+            }
+          );
         }
       }
     } catch {
@@ -73,11 +80,18 @@ export class PairingV2Controller {
     try {
       const requester = await deviceService.findByDeviceId(result.requester_device_id);
       if (requester?.fcm_token) {
-        await fcmService.sendDataNotification(requester.fcm_token, {
-          type: 'CHANNEL_EVENT',
-          kind: 'APPROVED',
-          epoch: String(result.current_epoch)
-        });
+        await fcmService.sendDataNotification(
+          requester.fcm_token,
+          {
+            type: 'CHANNEL_EVENT',
+            kind: 'APPROVED',
+            epoch: String(result.current_epoch)
+          },
+          {
+            title: 'Yêu cầu đã được duyệt',
+            body: 'Bạn đã được thêm vào kênh. Mở app để xem OTP.'
+          }
+        );
       }
     } catch {
       // ignore FCM failures

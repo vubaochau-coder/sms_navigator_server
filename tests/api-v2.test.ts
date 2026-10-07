@@ -9,6 +9,7 @@ import { channelService, CHANNEL_KEY_ENVELOPES_COLLECTION } from '../src/service
 import { pairingV2Service } from '../src/services/pairing.v2.service.js';
 import { messageV2Service } from '../src/services/message.v2.service.js';
 import { mockFirestore } from '../src/config/firestore-mock.js';
+import { fcmService } from '../src/services/fcm.service.js';
 import { KEK_ALG } from '../src/types/v2.js';
 
 /**
@@ -843,6 +844,49 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       });
     });
 
+    it('sends FCM notification block to owner with requester name upon claim', async () => {
+      const owner = await reg('Owner Alice');
+      await request(server)
+        .put('/api/v2/devices/fcm-token')
+        .set(bearer(owner.token))
+        .send({ fcm_token: 'fcm_owner_token_12345' });
+
+      const member = await reg('Member Bob');
+      const { channelId } = await createChannel(owner, 'Kênh Test FCM');
+
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      const fcmSpy = jest.spyOn(fcmService, 'sendDataNotification');
+
+      const res = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token,
+          device_name: 'Bob Phone'
+        });
+      expect(res.status).toBe(201);
+
+      expect(fcmSpy).toHaveBeenCalledWith(
+        'fcm_owner_token_12345',
+        expect.objectContaining({
+          type: 'CHANNEL_EVENT',
+          channel_id: channelId,
+          kind: 'JOIN_REQUEST',
+          requester_device_name: 'Bob Phone'
+        }),
+        expect.objectContaining({
+          title: 'Yêu cầu tham gia kênh',
+          body: 'Bob Phone muốn tham gia kênh.'
+        })
+      );
+      fcmSpy.mockRestore();
+    });
+
     it('404 when the pairing token does not match the session', async () => {
       const owner = await reg('Owner');
       const member = await reg('Member');
@@ -1121,6 +1165,60 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       const mine = await request(server).get('/api/v2/pairing/requests/mine').set(bearer(member.token));
       expect(mine.body.requests[0].status).toBe('APPROVED');
       expect(mine.body.requests[0].decided_at).toBeTruthy();
+    });
+
+    it('sends FCM notification block to requester upon approve', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      await request(server)
+        .put('/api/v2/devices/fcm-token')
+        .set(bearer(member.token))
+        .send({ fcm_token: 'fcm_member_token_67890' });
+
+      const { channelId } = await createChannel(owner, 'Kênh Test Approve');
+
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      const claimRes = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token,
+          device_name: 'Member'
+        });
+
+      const fcmSpy = jest.spyOn(fcmService, 'sendDataNotification');
+
+      const state = await channelState(owner.token, channelId);
+      const ids = await activeMemberIds(owner.token, channelId);
+      const newEpoch = state.current_epoch + 1;
+
+      const approveRes = await request(server)
+        .post('/api/v2/pairing/requests/approve')
+        .set(bearer(owner.token))
+        .send({
+          request_id: claimRes.body.request_id,
+          package: packageFor([...ids, member.deviceId], state.current_epoch, state.membership_version, newEpoch)
+        });
+      expect(approveRes.status).toBe(200);
+
+      expect(fcmSpy).toHaveBeenCalledWith(
+        'fcm_member_token_67890',
+        expect.objectContaining({
+          type: 'CHANNEL_EVENT',
+          kind: 'APPROVED',
+          epoch: String(newEpoch)
+        }),
+        expect.objectContaining({
+          title: 'Yêu cầu đã được duyệt',
+          body: 'Bạn đã được thêm vào kênh. Mở app để xem OTP.'
+        })
+      );
+      fcmSpy.mockRestore();
     });
 
     it('409 MEMBERSHIP_CHANGED when the package snapshot is stale (KL6)', async () => {
