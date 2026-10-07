@@ -1463,6 +1463,58 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       expect(second.body.sequence_number).toBe(2);
     });
 
+    it('sends FCM notification block to active members including owner upon new message', async () => {
+      const owner = await reg('Owner Alice');
+      await request(server)
+        .put('/api/v2/devices/fcm-token')
+        .set(bearer(owner.token))
+        .send({ fcm_token: 'fcm_owner_token_new_msg' });
+
+      const member = await reg('Member Bob');
+      await request(server)
+        .put('/api/v2/devices/fcm-token')
+        .set(bearer(member.token))
+        .send({ fcm_token: 'fcm_member_token_new_msg' });
+
+      const { channelId } = await createChannel(owner, 'Kênh Test FCM Msg');
+      await joinChannel(owner, channelId, member); // epoch 2
+
+      const fcmSpy = jest.spyOn(fcmService, 'sendDataNotification');
+
+      const msgRes = await sendMessage(owner, channelId, 2, 'fresh-otp');
+      expect(msgRes.status).toBe(201);
+
+      // Verify owner received FCM notification block
+      expect(fcmSpy).toHaveBeenCalledWith(
+        'fcm_owner_token_new_msg',
+        expect.objectContaining({
+          type: 'CHANNEL_EVENT',
+          channel_id: channelId,
+          kind: 'NEW_MESSAGE'
+        }),
+        expect.objectContaining({
+          title: 'OTP mới',
+          body: 'Có mã OTP mới vừa được chia sẻ. Chạm để xem.'
+        })
+      );
+
+      // Verify member received FCM notification block
+      expect(fcmSpy).toHaveBeenCalledWith(
+        'fcm_member_token_new_msg',
+        expect.objectContaining({
+          type: 'CHANNEL_EVENT',
+          channel_id: channelId,
+          kind: 'NEW_MESSAGE'
+        }),
+        expect.objectContaining({
+          title: 'OTP mới',
+          body: 'Có mã OTP mới vừa được chia sẻ. Chạm để xem.'
+        })
+      );
+
+      fcmSpy.mockRestore();
+    });
+
     it('409 REPLAY_DETECTED for the same (channel|nonce|ciphertext) within 24h', async () => {
       const owner = await reg('Owner');
       const { channelId } = await createChannel(owner, 'Kênh');

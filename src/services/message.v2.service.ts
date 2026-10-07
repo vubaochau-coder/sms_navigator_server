@@ -131,9 +131,7 @@ export class MessageV2Service {
   /** FCM wake-up bell to ACTIVE members (never carries ciphertext — I5/N8). */
   private async notifyNewMessage(channelId: string, senderDeviceId: string): Promise<void> {
     try {
-      const members = (await channelService.listActiveMembers(channelId)).filter(
-        (member) => member.device_id !== senderDeviceId
-      );
+      const members = await channelService.listActiveMembers(channelId);
       if (members.length === 0) return;
 
       // One batched round of device reads instead of one per member
@@ -142,11 +140,18 @@ export class MessageV2Service {
         devices
           .filter((device): device is NonNullable<typeof device> => device?.fcm_token !== undefined)
           .map((device) =>
-            fcmService.sendDataNotification(device.fcm_token!, {
-              type: 'CHANNEL_EVENT',
-              channel_id: channelId,
-              kind: 'NEW_MESSAGE'
-            })
+            fcmService.sendDataNotification(
+              device.fcm_token!,
+              {
+                type: 'CHANNEL_EVENT',
+                channel_id: channelId,
+                kind: 'NEW_MESSAGE'
+              },
+              {
+                title: 'OTP mới',
+                body: 'Có mã OTP mới vừa được chia sẻ. Chạm để xem.'
+              }
+            )
           )
       );
     } catch (error) {
