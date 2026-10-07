@@ -59,6 +59,8 @@ export interface ClaimResult {
 
 export interface ApproveResult {
   requester_device_id: string;
+  channel_id: string;
+  channel_name: string;
   current_epoch: number;
   membership_version: number;
 }
@@ -544,6 +546,8 @@ export class PairingV2Service {
 
       return {
         requester_device_id: request.requester_device_id,
+        channel_id: request.channel_id,
+        channel_name: String(channel.name ?? ''),
         current_epoch: newEpoch,
         membership_version: Number(channel.membership_version ?? 1) + 1
       };

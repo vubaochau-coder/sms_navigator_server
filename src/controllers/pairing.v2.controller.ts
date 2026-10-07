@@ -34,12 +34,13 @@ export class PairingV2Controller {
             {
               type: 'CHANNEL_EVENT',
               channel_id: claimed.channel_id,
+              channel_name: channel.name,
               kind: 'JOIN_REQUEST',
               requester_device_name: device_name
             },
             {
               title: 'Yêu cầu tham gia kênh',
-              body: `${device_name} muốn tham gia kênh.`
+              body: `${device_name} muốn tham gia kênh "${channel.name}".`
             }
           );
         }
@@ -84,12 +85,14 @@ export class PairingV2Controller {
           requester.fcm_token,
           {
             type: 'CHANNEL_EVENT',
+            channel_id: result.channel_id,
+            channel_name: result.channel_name,
             kind: 'APPROVED',
             epoch: String(result.current_epoch)
           },
           {
             title: 'Yêu cầu đã được duyệt',
-            body: 'Bạn đã được thêm vào kênh. Mở app để xem OTP.'
+            body: `Bạn đã được thêm vào kênh "${result.channel_name}". Mở app để xem OTP.`
           }
         );
       }

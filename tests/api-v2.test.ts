@@ -876,12 +876,13 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
         expect.objectContaining({
           type: 'CHANNEL_EVENT',
           channel_id: channelId,
+          channel_name: 'Kênh Test FCM',
           kind: 'JOIN_REQUEST',
           requester_device_name: 'Bob Phone'
         }),
         expect.objectContaining({
           title: 'Yêu cầu tham gia kênh',
-          body: 'Bob Phone muốn tham gia kênh.'
+          body: 'Bob Phone muốn tham gia kênh "Kênh Test FCM".'
         })
       );
       fcmSpy.mockRestore();
@@ -1210,12 +1211,14 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
         'fcm_member_token_67890',
         expect.objectContaining({
           type: 'CHANNEL_EVENT',
+          channel_id: channelId,
+          channel_name: 'Kênh Test Approve',
           kind: 'APPROVED',
           epoch: String(newEpoch)
         }),
         expect.objectContaining({
           title: 'Yêu cầu đã được duyệt',
-          body: 'Bạn đã được thêm vào kênh. Mở app để xem OTP.'
+          body: 'Bạn đã được thêm vào kênh "Kênh Test Approve". Mở app để xem OTP.'
         })
       );
       fcmSpy.mockRestore();
@@ -1490,11 +1493,12 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
         expect.objectContaining({
           type: 'CHANNEL_EVENT',
           channel_id: channelId,
+          channel_name: 'Kênh Test FCM Msg',
           kind: 'NEW_MESSAGE'
         }),
         expect.objectContaining({
           title: 'OTP mới',
-          body: 'Có mã OTP mới vừa được chia sẻ. Chạm để xem.'
+          body: 'Có mã OTP mới từ kênh "Kênh Test FCM Msg". Chạm để xem.'
         })
       );
 
@@ -1504,11 +1508,12 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
         expect.objectContaining({
           type: 'CHANNEL_EVENT',
           channel_id: channelId,
+          channel_name: 'Kênh Test FCM Msg',
           kind: 'NEW_MESSAGE'
         }),
         expect.objectContaining({
           title: 'OTP mới',
-          body: 'Có mã OTP mới vừa được chia sẻ. Chạm để xem.'
+          body: 'Có mã OTP mới từ kênh "Kênh Test FCM Msg". Chạm để xem.'
         })
       );
 

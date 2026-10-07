@@ -134,6 +134,12 @@ export class MessageV2Service {
       const members = await channelService.listActiveMembers(channelId);
       if (members.length === 0) return;
 
+      const channel = await channelService.findChannelById(channelId);
+      const channelName = channel?.name;
+      const body = channelName
+        ? `Có mã OTP mới từ kênh "${channelName}". Chạm để xem.`
+        : 'Có mã OTP mới vừa được chia sẻ. Chạm để xem.';
+
       // One batched round of device reads instead of one per member
       const devices = await Promise.all(members.map((member) => deviceService.findByDeviceId(member.device_id)));
       await Promise.all(
@@ -145,11 +151,12 @@ export class MessageV2Service {
               {
                 type: 'CHANNEL_EVENT',
                 channel_id: channelId,
+                ...(channelName ? { channel_name: channelName } : {}),
                 kind: 'NEW_MESSAGE'
               },
               {
                 title: 'OTP mới',
-                body: 'Có mã OTP mới vừa được chia sẻ. Chạm để xem.'
+                body
               }
             )
           )
