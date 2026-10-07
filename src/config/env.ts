@@ -6,7 +6,6 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3000),
-  SESSION_TTL_HOURS: z.coerce.number().default(720), // 30 days
   // Firebase Service Account Credentials can be passed as path or base64 JSON string
   FIREBASE_SERVICE_ACCOUNT_PATH: z.string().optional(),
   FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),

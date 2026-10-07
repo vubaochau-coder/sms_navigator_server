@@ -124,12 +124,12 @@ export class MessageV2Service {
       };
     });
 
-    await this.notifyNewMessage(input.channel_id, ownerId);
+    await this.notifyNewMessage(input.channel_id);
     return result;
   }
 
   /** FCM wake-up bell to ACTIVE members (never carries ciphertext — I5/N8). */
-  private async notifyNewMessage(channelId: string, senderDeviceId: string): Promise<void> {
+  private async notifyNewMessage(channelId: string): Promise<void> {
     try {
       const members = await channelService.listActiveMembers(channelId);
       if (members.length === 0) return;

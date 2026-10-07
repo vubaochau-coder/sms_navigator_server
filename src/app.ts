@@ -45,7 +45,7 @@ export function createApp(): express.Application {
   );
   app.use(express.json({ limit: '1mb' }));
 
-  // API v1 routes (legacy, kept until v2 migration completes)
+  // API v1: health check only (all legacy pairing/relay endpoints were removed)
   app.use('/api/v1', apiV1Routes);
 
   // API v2 routes (Channel 1-to-N E2EE architecture)
