@@ -102,6 +102,17 @@ export const v2SessionRateLimiter = rateLimit({
   message: v2Message('Too many pairing sessions created. Please wait before creating more.')
 });
 
+// POST /api/v2/channels/sessions/resolve - 30 / 5 min / device
+export const v2ResolveRateLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+  keyGenerator: v2KeyGenerator,
+  message: v2Message('Too many session resolve attempts. Please try again later.')
+});
+
 // POST /api/v2/pairing/requests (claim) - 10 / 5 min / device (anti brute token)
 export const v2ClaimRateLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,

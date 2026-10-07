@@ -70,6 +70,7 @@ export interface PairingRequestEntity {
   requester_device_id: string;
   requester_device_name: string;
   requester_public_key: string;
+  owner_device_name?: string;
   status: RequestStatus;
   decided_by?: string;
   decided_at?: string;

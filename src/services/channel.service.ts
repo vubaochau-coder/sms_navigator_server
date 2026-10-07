@@ -395,6 +395,24 @@ export class ChannelService {
           .where('status', '==', 'PENDING')
       );
 
+      // Fan-out to pending requests of channels owned by this device
+      const ownedChannels = await tx.get(
+        db
+          .collection(CHANNELS_COLLECTION)
+          .where('owner_device_id', '==', deviceId)
+      );
+
+      const ownerPendingSnapshots = await Promise.all(
+        ownedChannels.docs.map((doc) =>
+          tx.get(
+            db
+              .collection('pairing_requests')
+              .where('channel_id', '==', doc.id)
+              .where('status', '==', 'PENDING')
+          )
+        )
+      );
+
       // Writes executed after all reads have completed
       if (deviceDoc.exists) {
         tx.update(deviceRef, { device_name: deviceName, last_seen_at: now });
@@ -406,6 +424,12 @@ export class ChannelService {
 
       for (const doc of pendingRequests.docs) {
         tx.update(doc.ref, { requester_device_name: deviceName });
+      }
+
+      for (const snap of ownerPendingSnapshots) {
+        for (const doc of snap.docs) {
+          tx.update(doc.ref, { owner_device_name: deviceName });
+        }
       }
     });
   }

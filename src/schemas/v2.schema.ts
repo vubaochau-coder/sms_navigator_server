@@ -81,6 +81,12 @@ export const channelSessionCreateSchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required')
 });
 
+/** POST /channels/sessions/resolve — read-only session preview */
+export const channelSessionResolveSchema = z.object({
+  session_id: z.string().uuid(),
+  pairing_token: z.string().min(1)
+});
+
 /** POST /pairing/requests — T1 claim (API spec §5.1). */
 export const pairingRequestClaimSchema = z.object({
   session_id: z.string().min(1),

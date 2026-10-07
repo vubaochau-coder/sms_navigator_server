@@ -42,6 +42,14 @@ export interface SessionCreateResult {
   invite_url: string;
 }
 
+export interface SessionResolveResult {
+  session_id: string;
+  channel_id: string;
+  channel_name: string;
+  owner_device_name: string;
+  expires_at: string;
+}
+
 export interface ClaimResult {
   request_id: string;
   channel_id: string;
@@ -64,6 +72,7 @@ function requestFromDocument(data: Record<string, unknown> | undefined): Pairing
     requester_device_id: String(data.requester_device_id ?? ''),
     requester_device_name: String(data.requester_device_name ?? ''),
     requester_public_key: String(data.requester_public_key ?? ''),
+    owner_device_name: data.owner_device_name as string | undefined,
     status: (data.status as PairingRequestEntity['status']) ?? 'PENDING',
     decided_by: data.decided_by as string | undefined,
     decided_at: data.decided_at as string | undefined,
@@ -133,6 +142,84 @@ export class PairingV2Service {
       `&e=${expiresAtMs}`;
 
     return { session_id: sessionId, pairing_token: pairingToken, expires_at: expiresAt, invite_url: inviteUrl };
+  }
+
+  /**
+   * POST /channels/sessions/resolve (API spec §4.6): Member previews channel
+   * details before submitting a claim. Strictly read-only: Firestore is never
+   * mutated and session remains UNUSED.
+   * Performs early dedup checks (409 ALREADY_MEMBER, 409 REQUEST_ALREADY_PENDING)
+   * so client fails early before user interaction.
+   */
+  public async resolveSession(
+    requesterDeviceId: string,
+    sessionId: string,
+    pairingToken: string
+  ): Promise<SessionResolveResult> {
+    const db = getFirestoreDb();
+    if (!db) throw new Error('Firestore is not available');
+
+    const tokenHash = sha256Hex(pairingToken);
+    const sessionRef = db.collection(PAIRING_SESSIONS_COLLECTION).doc(sessionId);
+    const sessionDoc = await sessionRef.get();
+    if (!sessionDoc.exists) {
+      throw new HttpError(404, 'NOT_FOUND', 'Pairing session does not exist');
+    }
+    const session = sessionDoc.data() as Partial<PairingSessionEntity>;
+    if (String(session.pairing_token_hash ?? '') !== tokenHash) {
+      throw new HttpError(404, 'NOT_FOUND', 'Pairing token does not match this session');
+    }
+    if (session.status === 'CLAIMED') {
+      throw new HttpError(409, 'QR_ALREADY_USED', 'This invite code has already been used');
+    }
+    if (session.status !== 'UNUSED') {
+      throw new HttpError(410, 'QR_EXPIRED', 'This invite code is no longer valid');
+    }
+    if (Date.parse(String(session.expires_at ?? 0)) <= Date.now()) {
+      throw new HttpError(410, 'QR_EXPIRED', 'This invite code has expired');
+    }
+
+    const channelId = String(session.channel_id ?? '');
+    const [channelDoc, memberDoc, pendingDoc] = await Promise.all([
+      db.collection(CHANNELS_COLLECTION).doc(channelId).get(),
+      db.collection(CHANNEL_MEMBERS_COLLECTION).doc(channelMemberDocId(channelId, requesterDeviceId)).get(),
+      db.collection(PAIRING_PENDING_COLLECTION).doc(pairingPendingDocId(channelId, requesterDeviceId)).get()
+    ]);
+
+    if (!channelDoc.exists) {
+      throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
+    }
+    const channel = channelDoc.data() as Partial<ChannelEntity>;
+    if (channel.status !== 'ACTIVE') {
+      throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
+    }
+
+    const member = memberDoc.data() as Partial<ChannelMemberEntity> | undefined;
+    if (memberDoc.exists && member?.status === 'ACTIVE') {
+      throw new HttpError(409, 'ALREADY_MEMBER', 'Your device has already joined this channel');
+    }
+
+    if (pendingDoc.exists) {
+      throw new HttpError(
+        409,
+        'REQUEST_ALREADY_PENDING',
+        'A join request from this device is already awaiting approval for this channel'
+      );
+    }
+
+    let ownerDeviceName = '';
+    if (channel.owner_device_id) {
+      const ownerDoc = await db.collection(DEVICES_COLLECTION).doc(channel.owner_device_id).get();
+      ownerDeviceName = String(ownerDoc.data()?.device_name ?? '');
+    }
+
+    return {
+      session_id: sessionId,
+      channel_id: channelId,
+      channel_name: String(channel.name ?? ''),
+      owner_device_name: ownerDeviceName,
+      expires_at: String(session.expires_at ?? '')
+    };
   }
 
   /**
@@ -235,6 +322,7 @@ export class PairingV2Service {
         requester_device_id: requesterDeviceId,
         requester_device_name: deviceName,
         requester_public_key: requesterPublicKey,
+        owner_device_name: ownerDeviceName,
         status: 'PENDING',
         created_at: now
       });
@@ -284,6 +372,7 @@ export class PairingV2Service {
       request_id: request.request_id,
       channel_id: request.channel_id,
       channel_name: channelNameById.get(request.channel_id) ?? '',
+      owner_device_name: request.owner_device_name ?? '',
       status: request.status,
       created_at: request.created_at,
       decided_at: request.decided_at

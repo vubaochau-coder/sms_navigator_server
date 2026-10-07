@@ -274,6 +274,41 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
         .send({ device_name: 'Galaxy S23 của B' });
       expect(again.status).toBe(200);
     });
+
+    it('renames owner device and fans out owner_device_name to pending requests', async () => {
+      const owner = await reg('Owner Original');
+      const member = await reg('Member B');
+      const { channelId } = await createChannel(owner, 'Kênh nhà');
+
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      const claimRes = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token,
+          device_name: 'Member B'
+        });
+      expect(claimRes.status).toBe(201);
+
+      // Member sees initial owner_device_name
+      const mineBefore = await request(server).get('/api/v2/pairing/requests/mine').set(bearer(member.token));
+      expect(mineBefore.body.requests[0].owner_device_name).toBe('Owner Original');
+
+      // Owner renames device
+      const renameRes = await request(server)
+        .put('/api/v2/devices/name')
+        .set(bearer(owner.token))
+        .send({ device_name: 'Owner Renamed' });
+      expect(renameRes.status).toBe(200);
+
+      // Member sees updated owner_device_name
+      const mineAfter = await request(server).get('/api/v2/pairing/requests/mine').set(bearer(member.token));
+      expect(mineAfter.body.requests[0].owner_device_name).toBe('Owner Renamed');
+    });
   });
 
   describe('GET /api/v2/devices/me (§3.4)', () => {
@@ -584,6 +619,185 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
     });
   });
 
+  describe('POST /api/v2/channels/sessions/resolve (§4.6)', () => {
+    it('previews channel metadata for a valid session without modifying Firestore (strictly read-only)', async () => {
+      const owner = await reg('Owner Alice');
+      const member = await reg('Member Bob');
+      const { channelId } = await createChannel(owner, 'Kênh Thông Tin');
+
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      expect(sessionRes.status).toBe(201);
+
+      const res = await request(server)
+        .post('/api/v2/channels/sessions/resolve')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        success: true,
+        session_id: sessionRes.body.session_id,
+        channel_id: channelId,
+        channel_name: 'Kênh Thông Tin',
+        owner_device_name: 'Owner Alice',
+        expires_at: sessionRes.body.expires_at
+      });
+
+      // Verify read-only: session status is still UNUSED
+      const sessionDoc = await mockFirestore.collection('pairing_sessions').doc(sessionRes.body.session_id).get();
+      expect(sessionDoc.data()?.status).toBe('UNUSED');
+    });
+
+    it('rejects with 404 when session does not exist', async () => {
+      const member = await reg('Member Bob');
+      const res = await request(server)
+        .post('/api/v2/channels/sessions/resolve')
+        .set(bearer(member.token))
+        .send({
+          session_id: randomUUID(),
+          pairing_token: '0123456789abcdef0123456789abcdef'
+        });
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('NOT_FOUND');
+    });
+
+    it('rejects with 404 when pairing token does not match', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      const res = await request(server)
+        .post('/api/v2/channels/sessions/resolve')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: '00000000000000000000000000000000'
+        });
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('NOT_FOUND');
+    });
+
+    it('rejects with 409 QR_ALREADY_USED when session has been claimed', async () => {
+      const owner = await reg('Owner');
+      const member1 = await reg('Member 1');
+      const member2 = await reg('Member 2');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member1.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token,
+          device_name: 'Member 1'
+        });
+
+      const res = await request(server)
+        .post('/api/v2/channels/sessions/resolve')
+        .set(bearer(member2.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token
+        });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('QR_ALREADY_USED');
+    });
+
+    it('rejects with 410 QR_EXPIRED when session has expired', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      // Expire session manually in mock DB
+      const sessionDocRef = mockFirestore.collection('pairing_sessions').doc(sessionRes.body.session_id);
+      await sessionDocRef.update({ expires_at: new Date(Date.now() - 1000).toISOString() });
+
+      const res = await request(server)
+        .post('/api/v2/channels/sessions/resolve')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token
+        });
+      expect(res.status).toBe(410);
+      expect(res.body.error).toBe('QR_EXPIRED');
+    });
+
+    it('rejects with 409 ALREADY_MEMBER when caller is already active member or owner', async () => {
+      const owner = await reg('Owner');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      const res = await request(server)
+        .post('/api/v2/channels/sessions/resolve')
+        .set(bearer(owner.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token
+        });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('ALREADY_MEMBER');
+    });
+
+    it('rejects with 409 REQUEST_ALREADY_PENDING when caller has pending request', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+
+      // Create session 1 and claim it
+      const sessionRes1 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes1.body.session_id,
+          pairing_token: sessionRes1.body.pairing_token,
+          device_name: 'Member'
+        });
+
+      // Create session 2 for same channel
+      const sessionRes2 = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+
+      // Member attempts to resolve session 2 while having pending request on channel
+      const res = await request(server)
+        .post('/api/v2/channels/sessions/resolve')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes2.body.session_id,
+          pairing_token: sessionRes2.body.pairing_token
+        });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('REQUEST_ALREADY_PENDING');
+    });
+  });
+
   describe('POST /api/v2/pairing/requests (T1 claim, §5.1)', () => {
     it('claims a QR and creates a PENDING request', async () => {
       const owner = await reg('Owner A');
@@ -622,7 +836,11 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       // Member sees it in "mine"
       const mine = await request(server).get('/api/v2/pairing/requests/mine').set(bearer(member.token));
       expect(mine.status).toBe(200);
-      expect(mine.body.requests[0]).toMatchObject({ status: 'PENDING', channel_id: channelId });
+      expect(mine.body.requests[0]).toMatchObject({
+        status: 'PENDING',
+        channel_id: channelId,
+        owner_device_name: 'Owner A'
+      });
     });
 
     it('404 when the pairing token does not match the session', async () => {

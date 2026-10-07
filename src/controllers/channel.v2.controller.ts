@@ -184,6 +184,23 @@ export class PairingChannelV2Controller {
     });
   }
 
+  /** POST /api/v2/channels/sessions/resolve — Member previews channel before claiming (§4.6). */
+  public static async resolveSession(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { session_id, pairing_token } = req.body as { session_id: string; pairing_token: string };
+
+    const result = await pairingV2Service.resolveSession(device.device_id, session_id, pairing_token);
+
+    res.status(200).json({
+      success: true,
+      session_id: result.session_id,
+      channel_id: result.channel_id,
+      channel_name: result.channel_name,
+      owner_device_name: result.owner_device_name,
+      expires_at: result.expires_at
+    });
+  }
+
   /** GET /api/v2/channels/requests?channel_id=&status= — Owner approval queue (§5.3). */
   public static async listRequests(req: Request, res: Response): Promise<void> {
     const device = req.device!;
