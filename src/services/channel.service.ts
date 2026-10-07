@@ -483,7 +483,7 @@ export class ChannelService {
     channelId: string,
     revokeDeviceIds: string[],
     pkg: PackageInput
-  ): Promise<{ current_epoch: number; membership_version: number; revoked: string[] }> {
+  ): Promise<{ current_epoch: number; membership_version: number; revoked: string[]; channel_name: string }> {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
@@ -571,7 +571,8 @@ export class ChannelService {
       return {
         current_epoch: newEpoch,
         membership_version: channel.membership_version + 1,
-        revoked
+        revoked,
+        channel_name: channel.name
       };
     });
   }

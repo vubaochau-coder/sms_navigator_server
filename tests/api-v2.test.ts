@@ -1746,6 +1746,48 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       expect(cDetail.status).toBe(403);
     });
 
+    it('sends FCM REVOKED bell with notification block to revoked devices', async () => {
+      const owner = await reg('Owner Revoker');
+      const target = await reg('Target To Revoke');
+      await request(server)
+        .put('/api/v2/devices/fcm-token')
+        .set(bearer(target.token))
+        .send({ fcm_token: 'fcm_revoked_target_token' });
+
+      const { channelId } = await createChannel(owner, 'Kênh Bảo Mật');
+      await joinChannel(owner, channelId, target); // epoch 2
+
+      const fcmSpy = jest.spyOn(fcmService, 'sendDataNotification');
+      const before = await channelState(owner.token, channelId);
+
+      const res = await request(server)
+        .post('/api/v2/channels/revoke')
+        .set(bearer(owner.token))
+        .send({
+          channel_id: channelId,
+          revoke_device_ids: [target.deviceId],
+          package: packageFor([owner.deviceId], before.current_epoch, before.membership_version, before.current_epoch + 1)
+        });
+      expect(res.status).toBe(200);
+
+      expect(fcmSpy).toHaveBeenCalledWith(
+        'fcm_revoked_target_token',
+        expect.objectContaining({
+          type: 'CHANNEL_EVENT',
+          channel_id: channelId,
+          channel_name: 'Kênh Bảo Mật',
+          kind: 'REVOKED',
+          epoch: String(before.current_epoch + 1)
+        }),
+        expect.objectContaining({
+          title: 'Quyền truy cập đã bị thu hồi',
+          body: 'Bạn không còn quyền truy cập kênh "Kênh Bảo Mật".'
+        })
+      );
+
+      fcmSpy.mockRestore();
+    });
+
     it('422 when the envelope set does not match {Owner} ∪ {ACTIVE remaining} (KL8)', async () => {
       const owner = await reg('Owner');
       const b = await reg('B');

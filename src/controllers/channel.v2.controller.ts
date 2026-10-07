@@ -147,12 +147,20 @@ export class ChannelV2Controller {
         const target = await deviceService.findByDeviceId(revokedId);
         if (!target?.fcm_token) return;
         try {
-          await fcmService.sendDataNotification(target.fcm_token, {
-            type: 'CHANNEL_EVENT',
-            channel_id,
-            kind: 'REVOKED',
-            epoch: String(result.current_epoch)
-          });
+          await fcmService.sendDataNotification(
+            target.fcm_token,
+            {
+              type: 'CHANNEL_EVENT',
+              channel_id,
+              channel_name: result.channel_name,
+              kind: 'REVOKED',
+              epoch: String(result.current_epoch)
+            },
+            {
+              title: 'Quyền truy cập đã bị thu hồi',
+              body: `Bạn không còn quyền truy cập kênh "${result.channel_name}".`
+            }
+          );
         } catch {
           // ignore
         }
