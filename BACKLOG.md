@@ -37,6 +37,8 @@ Mobile đang giữ hợp đồng thiết kế đầy đủ trong `../sms_navigat
 |---|---|---|
 | 3.1 | Filter `fcm_token` lọt chuỗi rỗng | `message.v2.service.ts` `notifyNewMessage`: `device?.fcm_token !== undefined` → token `''` vẫn pass rồi fail im lặng. Sửa thành truthy check `!!device?.fcm_token` (áp cùng pattern cho mọi nơi bắn bell: pairing.v2.controller, channel.v2.controller) |
 | 3.2 | Log đếm bell | Các điểm bắn bell fail im lặng (chỉ warn rời rạc). Cân nhắc log có cấu trúc: số bell gửi thành công / số device thiếu token / số lỗi — để debug "không thấy FCM" nhanh hơn |
+| 3.3 | Endpoint `/.well-known/assetlinks.json` cho Deeplink App Links | Phục vụ file JSON xác thực SHA-256 fingerprint ứng dụng Android để hệ điều hành mở trực tiếp app không qua popup hỏi trình duyệt |
+| 3.4 | Schema & API Whitelist theo từng Channel | Mở rộng doc `channels`: thêm trường `sender_whitelist` (mảng string hoặc regex rule). Bổ sung endpoint `PUT /api/v2/channels/whitelist` để Owner đồng bộ cấu hình whitelist lên server và khôi phục khi đổi máy |
 
 ---
 
