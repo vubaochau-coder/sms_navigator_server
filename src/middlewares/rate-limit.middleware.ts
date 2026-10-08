@@ -102,3 +102,18 @@ export const v2ReadRateLimiter = rateLimit({
   keyGenerator: v2KeyGenerator,
   message: v2Message('Read rate limit exceeded. Please wait a moment.')
 });
+
+// GET /health, GET /api/v1/health - 20 / min / IP
+export const healthRateLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+  message: {
+    success: false,
+    error: 'RATE_LIMITED',
+    message: 'Too many health check requests. Please try again later.'
+  }
+});
+

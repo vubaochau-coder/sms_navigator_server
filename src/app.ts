@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { env } from './config/env.js';
 import { apiV1Routes } from './routes/api.routes.js';
 import { apiV2Routes } from './routes/v2.routes.js';
+import { healthRoutes } from './routes/health.routes.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import { logger } from './utils/logger.js';
 
@@ -45,7 +46,10 @@ export function createApp(): express.Application {
   );
   app.use(express.json({ limit: '1mb' }));
 
-  // API v1: health check only (all legacy pairing/relay endpoints were removed)
+  // Root health check endpoint (standardized)
+  app.use('/health', healthRoutes);
+
+  // API v1: legacy health check alias for keep-alive and backwards compatibility
   app.use('/api/v1', apiV1Routes);
 
   // API v2 routes (Channel 1-to-N E2EE architecture)
