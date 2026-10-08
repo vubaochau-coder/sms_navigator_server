@@ -92,7 +92,7 @@ export class PairingV2Controller {
           },
           {
             title: 'Yêu cầu đã được duyệt',
-            body: `Bạn đã được thêm vào kênh "${result.channel_name}". Mở app để xem OTP.`
+            body: `Bạn đã được thêm vào kênh "${result.channel_name}". Mở app để xem tin nhắn SMS.`
           }
         );
       }
