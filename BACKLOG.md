@@ -39,6 +39,7 @@ Mobile đang giữ hợp đồng thiết kế đầy đủ trong `../sms_navigat
 | 3.2 | Log đếm bell | Các điểm bắn bell fail im lặng (chỉ warn rời rạc). Cân nhắc log có cấu trúc: số bell gửi thành công / số device thiếu token / số lỗi — để debug "không thấy FCM" nhanh hơn |
 | 3.3 | Endpoint `/.well-known/assetlinks.json` cho Deeplink App Links | Phục vụ file JSON xác thực SHA-256 fingerprint ứng dụng Android để hệ điều hành mở trực tiếp app không qua popup hỏi trình duyệt |
 | 3.4 | Schema & API Whitelist theo từng Channel | Mở rộng doc `channels`: thêm trường `sender_whitelist` (mảng string hoặc regex rule). Bổ sung endpoint `PUT /api/v2/channels/whitelist` để Owner đồng bộ cấu hình whitelist lên server và khôi phục khi đổi máy |
+| 3.5 | API Đổi tên Kênh (`PUT /api/v2/channels/:channel_id/name`) | • Endpoint cho phép Owner đổi tên hiển thị của kênh.<br>• Guard: `403 NOT_OWNER` nếu caller không phải Owner.<br>• Schema: `z.object({ name: z.string().trim().min(1).max(50) })`.<br>• Cập nhật `channels/{channelId}.name` trong Firestore (display-only metadata, không cần rotate epoch).<br>• (Tuỳ chọn) Bắn FCM thông báo cho các active member để đồng bộ tên kênh mới. |
 
 ---
 
