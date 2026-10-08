@@ -1700,9 +1700,9 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       expect(res.status).toBe(200);
       expect(res.body.truncated).toBe(true);
       expect(res.body.messages).toHaveLength(1000);
-      // The 1000 NEWEST are returned (5 oldest dropped)
-      expect(res.body.messages[0].sequence_number).toBe(6);
-      expect(res.body.messages[999].sequence_number).toBe(1005);
+      // The 1000 NEWEST are returned (newest first, 5 oldest dropped)
+      expect(res.body.messages[0].sequence_number).toBe(1005);
+      expect(res.body.messages[999].sequence_number).toBe(6);
     });
   });
 

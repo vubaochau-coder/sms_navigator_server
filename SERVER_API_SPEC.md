@@ -360,8 +360,8 @@ sách kênh từ `req.device` (Q2 → Q4); client **không truyền `channel_id`
 
 - Server lọc `server_received_at` theo ngày `date` cộng `tz_offset` phút
   (mặc định 0 = UTC).
-- Sort theo `server_received_at` tăng dần (sequence không so sánh được giữa
-  các kênh); mỗi dòng kèm `channel_id` + `channel_name` để UI hiển thị nguồn.
+- Sort theo `server_received_at` giảm dần (tin mới nhất lên đầu; sequence không
+  so sánh được giữa các kênh); mỗi dòng kèm `channel_id` + `channel_name` để UI hiển thị nguồn.
 - Cap 1000 tin/ngày; vượt → trả 1000 tin **mới nhất** + `"truncated": true`.
 - Sequence vẫn là ordering/anti-replay phía server (KL7, T5) — không phải cơ
   chế sync của mobile.

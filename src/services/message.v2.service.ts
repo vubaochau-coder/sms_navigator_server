@@ -171,7 +171,7 @@ export class MessageV2Service {
    * Q2 → Q4 (API spec §6.3): fetch by day, channel-agnostic, across every
    * channel the caller is an ACTIVE member of (KL12). Revoked channels are
    * silently excluded. Filter boundary = `date` + `tz_offset` minutes on
-   * `server_received_at`; sort ascending; cap 1000 newest + truncated flag.
+   * `server_received_at`; sort descending (newest first); cap 1000 newest + truncated flag.
    */
   public async fetchMessagesByDate(
     deviceId: string,
@@ -217,11 +217,11 @@ export class MessageV2Service {
     }
 
     entities.sort(
-      (a, b) => a.server_received_at.localeCompare(b.server_received_at) || a.sequence_number - b.sequence_number
+      (a, b) => b.server_received_at.localeCompare(a.server_received_at) || b.sequence_number - a.sequence_number
     );
 
     const truncated = entities.length > MESSAGES_DAY_CAP;
-    const capped = truncated ? entities.slice(-MESSAGES_DAY_CAP) : entities;
+    const capped = truncated ? entities.slice(0, MESSAGES_DAY_CAP) : entities;
 
     // Batched channel-name lookup (no per-channel sequential read)
     const channelDocs = await Promise.all(channelIds.map((id) => channelService.findChannelById(id)));
