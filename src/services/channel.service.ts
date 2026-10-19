@@ -5,6 +5,7 @@ import {
   ChannelMemberEntity,
   ChannelRole,
   ChannelStatus,
+  ChannelWhitelistBlob,
   KEK_ALG,
   MemberStatus,
   PackageInput
@@ -31,6 +32,21 @@ export function envelopeDocId(channelId: string, deviceId: string, epoch: number
 
 function channelFromDocument(id: string, data: Record<string, unknown> | undefined): ChannelEntity | null {
   if (!data || typeof data.name !== 'string') return null;
+  const rawWhitelist = data.whitelist as Record<string, unknown> | undefined;
+  let whitelist: ChannelWhitelistBlob | undefined = undefined;
+  if (
+    rawWhitelist &&
+    typeof rawWhitelist.ciphertext === 'string' &&
+    typeof rawWhitelist.nonce === 'string'
+  ) {
+    whitelist = {
+      key_epoch: Number(rawWhitelist.key_epoch ?? 1),
+      ciphertext: rawWhitelist.ciphertext,
+      nonce: rawWhitelist.nonce,
+      whitelist_version: Number(rawWhitelist.whitelist_version ?? 1),
+      updated_at: String(rawWhitelist.updated_at ?? nowIso())
+    };
+  }
   return {
     channel_id: typeof data.channel_id === 'string' ? data.channel_id : id,
     owner_device_id: String(data.owner_device_id ?? ''),
@@ -41,7 +57,8 @@ function channelFromDocument(id: string, data: Record<string, unknown> | undefin
     member_count: Number(data.member_count ?? 1),
     status: data.status === 'ARCHIVED' ? 'ARCHIVED' : 'ACTIVE',
     created_at: String(data.created_at ?? nowIso()),
-    updated_at: String(data.updated_at ?? nowIso())
+    updated_at: String(data.updated_at ?? nowIso()),
+    whitelist
   };
 }
 
@@ -574,6 +591,64 @@ export class ChannelService {
         revoked,
         channel_name: channel.name
       };
+    });
+  }
+
+  /**
+   * PUT /api/v2/channels/whitelist (§4.3 / ROADMAP_CHANNEL_WHITELIST.md v2.2):
+   * Owner updates E2EE whitelist blob with optimistic concurrency check (whitelist_version).
+   */
+  public async updateWhitelist(
+    channelId: string,
+    callerDeviceId: string,
+    data: {
+      key_epoch: number;
+      ciphertext: string;
+      nonce: string;
+      whitelist_version: number;
+    }
+  ): Promise<ChannelWhitelistBlob> {
+    await this.requireOwner(channelId, callerDeviceId);
+
+    const db = getFirestoreDb();
+    if (!db) {
+      throw new HttpError(500, 'DATABASE_ERROR', 'Database unavailable');
+    }
+
+    const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
+    const now = nowIso();
+
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(channelRef);
+      if (!snap.exists) {
+        throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
+      }
+      const channelData = snap.data() || {};
+      const currentWhitelist = channelData.whitelist as Record<string, unknown> | undefined;
+      const currentVersion = Number(currentWhitelist?.whitelist_version ?? 0);
+
+      if (data.whitelist_version <= currentVersion) {
+        throw new HttpError(
+          409,
+          'STALE_WHITELIST',
+          `Whitelist version ${data.whitelist_version} is stale; current is ${currentVersion}`
+        );
+      }
+
+      const whitelistBlob: ChannelWhitelistBlob = {
+        key_epoch: data.key_epoch,
+        ciphertext: data.ciphertext,
+        nonce: data.nonce,
+        whitelist_version: data.whitelist_version,
+        updated_at: now
+      };
+
+      tx.update(channelRef, {
+        whitelist: whitelistBlob,
+        updated_at: now
+      });
+
+      return whitelistBlob;
     });
   }
 

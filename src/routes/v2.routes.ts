@@ -26,7 +26,8 @@ import {
   keyEnvelopeQuerySchema,
   messageSendV2Schema,
   messagesFetchQuerySchema,
-  channelRevokeSchema
+  channelRevokeSchema,
+  channelWhitelistUpdateSchema
 } from '../schemas/v2.schema.js';
 import {
   v2RegisterRateLimiter,
@@ -143,6 +144,14 @@ router.post(
   v2ApproveRateLimiter,
   validateBody(channelRevokeSchema),
   asyncHandler(ChannelV2Controller.revoke)
+);
+
+router.put(
+  '/channels/whitelist',
+  authenticate,
+  v2ApproveRateLimiter,
+  validateBody(channelWhitelistUpdateSchema),
+  asyncHandler(ChannelV2Controller.updateWhitelist)
 );
 
 // ---- Pairing ----------------------------------------------------------------

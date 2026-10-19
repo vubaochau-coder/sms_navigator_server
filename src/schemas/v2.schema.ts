@@ -136,3 +136,13 @@ export const channelRevokeSchema = z.object({
   revoke_device_ids: z.array(z.string().min(1)).min(1, 'revoke_device_ids must contain at least 1 device'),
   package: packageSchema
 });
+
+/** PUT /channels/whitelist — ROADMAP_CHANNEL_WHITELIST.md v2.2. */
+export const channelWhitelistUpdateSchema = z.object({
+  channel_id: z.string().min(1, 'channel_id is required'),
+  key_epoch: z.number().int().positive(),
+  ciphertext: z.string().min(1, 'ciphertext is required').max(65536, 'ciphertext exceeds 64KB'),
+  nonce: gcmNonceSchema,
+  whitelist_version: z.number().int().positive()
+});
+

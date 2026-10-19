@@ -77,7 +77,8 @@ export class ChannelV2Controller {
       my_provisioned_epoch: member.provisioned_epoch,
       owner_device_name: ownerDevice?.device_name ?? '',
       // Member cần pk_owner để derive KEK khi unwrap envelope (SRD 7.2)
-      owner_public_key: ownerDevice?.public_key ?? ''
+      owner_public_key: ownerDevice?.public_key ?? '',
+      whitelist: channel!.whitelist ?? null
     });
   }
 
@@ -171,6 +172,27 @@ export class ChannelV2Controller {
       success: true,
       current_epoch: result.current_epoch,
       membership_version: result.membership_version
+    });
+  }
+
+  /**
+   * PUT /api/v2/channels/whitelist (§4.3 / ROADMAP_CHANNEL_WHITELIST.md v2.2):
+   * Owner updates encrypted whitelist blob.
+   */
+  public static async updateWhitelist(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id, key_epoch, ciphertext, nonce, whitelist_version } = req.body;
+
+    const updatedBlob = await channelService.updateWhitelist(channel_id, device.device_id, {
+      key_epoch,
+      ciphertext,
+      nonce,
+      whitelist_version
+    });
+
+    res.status(200).json({
+      success: true,
+      whitelist: updatedBlob
     });
   }
 }

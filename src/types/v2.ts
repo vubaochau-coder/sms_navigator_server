@@ -23,6 +23,15 @@ export interface DeviceV2Entity {
   last_seen_at?: string;
 }
 
+/** Whitelist E2EE blob stored on server per ROADMAP_CHANNEL_WHITELIST.md v2.2. */
+export interface ChannelWhitelistBlob {
+  key_epoch: number;
+  ciphertext: string;
+  nonce: string;
+  whitelist_version: number;
+  updated_at: string;
+}
+
 /** SRD 3.2 — channels/{channelId}. */
 export interface ChannelEntity {
   channel_id: string;
@@ -35,6 +44,7 @@ export interface ChannelEntity {
   status: ChannelStatus;
   created_at: string;
   updated_at: string;
+  whitelist?: ChannelWhitelistBlob;
 }
 
 /** SRD 3.3 — channel_members/{channelId}__{deviceId}. */
