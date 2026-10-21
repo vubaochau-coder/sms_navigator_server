@@ -169,7 +169,7 @@ export class MessageV2Service {
       const devices = await Promise.all(members.map((member) => deviceService.findByDeviceId(member.device_id)));
       await Promise.all(
         devices
-          .filter((device): device is NonNullable<typeof device> => device?.fcm_token !== undefined)
+          .filter((device): device is NonNullable<typeof device> => Boolean(device?.fcm_token))
           .map((device) =>
             fcmService.sendDataNotification(
               device.fcm_token!,
