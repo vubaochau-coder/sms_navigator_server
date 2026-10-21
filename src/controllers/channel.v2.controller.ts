@@ -142,9 +142,10 @@ export class ChannelV2Controller {
 
     const result = await channelService.revokeMembers(device.device_id, channel_id, revoke_device_ids, pkg);
 
-    // FCM bell to every revoked device (best-effort, N8)
+    // FCM bell to every revoked device (best-effort, N8). Skipped on an
+    // idempotent retry — the bell already went out with the original commit.
     await Promise.all(
-      result.revoked.map(async (revokedId) => {
+      (result.replayed ? [] : result.revoked).map(async (revokedId) => {
         const target = await deviceService.findByDeviceId(revokedId);
         if (!target?.fcm_token) return;
         try {
@@ -171,7 +172,8 @@ export class ChannelV2Controller {
     res.status(200).json({
       success: true,
       current_epoch: result.current_epoch,
-      membership_version: result.membership_version
+      membership_version: result.membership_version,
+      replayed: result.replayed
     });
   }
 

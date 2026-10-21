@@ -7,10 +7,12 @@ import { replayGuardService } from './replay-guard.service.js';
 import { deviceService } from './device.service.js';
 import { fcmService } from './fcm.service.js';
 import { logger } from '../utils/logger.js';
-import { CHANNELS_COLLECTION, channelService, CHANNEL_MEMBERS_COLLECTION } from './channel.service.js';
+import { assertNotProduction } from '../utils/test-only.js';
+import { channelService } from './channel.service.js';
+import { CHANNELS_COLLECTION, CHANNEL_MEMBERS_COLLECTION, CHANNEL_MESSAGES_COLLECTION } from './collections.js';
 
 /** SRD 3.7 — channel_messages/{messageId}. */
-export const CHANNEL_MESSAGES_COLLECTION = 'channel_messages';
+export { CHANNEL_MESSAGES_COLLECTION };
 
 /** Spec §6.3: cap 1000 tin/ngày, vượt → trả 1000 tin mới nhất + truncated. */
 export const MESSAGES_DAY_CAP = 1000;
@@ -94,7 +96,12 @@ export class MessageV2Service {
       }
       const currentEpoch = Number(channelData.current_epoch ?? 1);
       if (input.request_epoch !== currentEpoch) {
-        throw new HttpError(409, 'EPOCH_OUTDATED', `request_epoch ${input.request_epoch} does not match current_epoch ${currentEpoch}`);
+        throw new HttpError(
+          409,
+          'EPOCH_OUTDATED',
+          `request_epoch ${input.request_epoch} does not match current_epoch ${currentEpoch}`,
+          { current_epoch: currentEpoch }
+        );
       }
 
       const sequenceNumber = Number(channelData.sequence_counter ?? 0) + 1;
@@ -246,6 +253,7 @@ export class MessageV2Service {
   }
 
   public async clearAll(): Promise<void> {
+    assertNotProduction('messageV2Service.clearAll');
     const db = getFirestoreDb();
     if (!db) return;
     const snapshot = await db.collection(CHANNEL_MESSAGES_COLLECTION).get();

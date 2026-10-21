@@ -11,26 +11,23 @@ import { getFirestoreDb } from '../config/firebase.js';
 import { env } from '../config/env.js';
 import { nowIso } from '../utils/time.js';
 import { HttpError } from '../utils/http-error.js';
-import { sha256Hex, DEVICES_COLLECTION } from './device.service.js';
+import { assertNotProduction } from '../utils/test-only.js';
+import { sha256Hex } from './device.service.js';
+import { validatePackage } from './channel.service.js';
+import { channelMembershipService } from './channel-membership.service.js';
 import {
+  DEVICES_COLLECTION,
   CHANNELS_COLLECTION,
   CHANNEL_MEMBERS_COLLECTION,
-  CHANNEL_KEY_ENVELOPES_COLLECTION,
+  PAIRING_SESSIONS_COLLECTION,
+  PAIRING_REQUESTS_COLLECTION,
+  PAIRING_PENDING_COLLECTION,
   channelMemberDocId,
-  envelopeDocId,
-  envelopeToDocInput,
-  validatePackage
-} from './channel.service.js';
+  pairingPendingDocId
+} from './collections.js';
 
-export const PAIRING_SESSIONS_COLLECTION = 'pairing_sessions';
-export const PAIRING_REQUESTS_COLLECTION = 'pairing_requests';
-/** One pending-join marker per (channel, requester) — dedup guard for T1. */
-export const PAIRING_PENDING_COLLECTION = 'pairing_pending';
-
-/** Document id per SRD 3.5b: `{channelId}__{requesterDeviceId}` (double underscore). */
-export function pairingPendingDocId(channelId: string, requesterDeviceId: string): string {
-  return `${channelId}__${requesterDeviceId}`;
-}
+// Re-exported for existing importers.
+export { PAIRING_SESSIONS_COLLECTION, PAIRING_REQUESTS_COLLECTION, PAIRING_PENDING_COLLECTION, pairingPendingDocId };
 
 /** N5/I9: QR invite is single-use with a 10-minute TTL. */
 export const SESSION_TTL_MS = 10 * 60 * 1000;
@@ -63,6 +60,8 @@ export interface ApproveResult {
   channel_name: string;
   current_epoch: number;
   membership_version: number;
+  /** true when this call was an idempotent retry of an already-committed approve. */
+  replayed: boolean;
 }
 
 function requestFromDocument(data: Record<string, unknown> | undefined): PairingRequestEntity | null {
@@ -454,6 +453,24 @@ export class PairingV2Service {
       if (String(channel.owner_device_id ?? '') !== ownerId) {
         throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can approve requests');
       }
+      // Idempotent retry: the same package already committed (response lost
+      // to a timeout). Answer with the committed result, write nothing.
+      if (request.status === 'APPROVED') {
+        const replay = channelMembershipService.findReplay(channelDoc.data(), pkg, {
+          kind: 'APPROVE',
+          requestId
+        });
+        if (replay) {
+          return {
+            requester_device_id: request.requester_device_id,
+            channel_id: request.channel_id,
+            channel_name: String(channel.name ?? ''),
+            current_epoch: replay.new_epoch,
+            membership_version: replay.new_membership_version,
+            replayed: true
+          };
+        }
+      }
       if (request.status !== 'PENDING') {
         throw new HttpError(409, 'REQUEST_NOT_PENDING', `Request is ${request.status}, not PENDING`);
       }
@@ -515,41 +532,27 @@ export class PairingV2Service {
         joined_at: now
       });
 
-      for (const member of activeMembers) {
-        tx.update(
-          db
-            .collection(CHANNEL_MEMBERS_COLLECTION)
-            .doc(channelMemberDocId(request.channel_id, String(member.device_id ?? ''))),
-          { provisioned_epoch: newEpoch }
-        );
-      }
-
-      tx.update(channelRef, {
-        current_epoch: newEpoch,
-        membership_version: Number(channel.membership_version ?? 1) + 1,
-        member_count: activeMembers.length + 1,
-        updated_at: now
+      const committed = channelMembershipService.commitRotation(tx, db, {
+        kind: 'APPROVE',
+        channelId: request.channel_id,
+        base: {
+          current_epoch: Number(channel.current_epoch ?? 1),
+          membership_version: Number(channel.membership_version ?? 1)
+        },
+        pkg,
+        provisionDeviceIds: activeMembers.map((m) => String(m.device_id ?? '')),
+        memberCount: activeMembers.length + 1,
+        now,
+        requestId
       });
-
-      for (const envelope of pkg.envelopes) {
-        tx.set(
-          db
-            .collection(CHANNEL_KEY_ENVELOPES_COLLECTION)
-            .doc(envelopeDocId(request.channel_id, envelope.device_id, newEpoch)),
-          {
-            channel_id: request.channel_id,
-            ...envelopeToDocInput(envelope),
-            created_at: now
-          }
-        );
-      }
 
       return {
         requester_device_id: request.requester_device_id,
         channel_id: request.channel_id,
         channel_name: String(channel.name ?? ''),
-        current_epoch: newEpoch,
-        membership_version: Number(channel.membership_version ?? 1) + 1
+        current_epoch: committed.current_epoch,
+        membership_version: committed.membership_version,
+        replayed: false
       };
     });
   }
@@ -627,6 +630,7 @@ export class PairingV2Service {
   }
 
   public async clearAll(): Promise<void> {
+    assertNotProduction('pairingV2Service.clearAll');
     const db = getFirestoreDb();
     if (!db) return;
     for (const name of [PAIRING_SESSIONS_COLLECTION, PAIRING_REQUESTS_COLLECTION, PAIRING_PENDING_COLLECTION]) {

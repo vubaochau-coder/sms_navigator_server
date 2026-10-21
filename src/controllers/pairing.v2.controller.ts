@@ -77,9 +77,12 @@ export class PairingV2Controller {
 
     const result = await pairingV2Service.approveRequest(device.device_id, request_id, pkg);
 
-    // Bell: APPROVED to the requester (best-effort, N8)
+    // Bell: APPROVED to the requester (best-effort, N8). Skipped on an
+    // idempotent retry — the bell already went out with the original commit.
     try {
-      const requester = await deviceService.findByDeviceId(result.requester_device_id);
+      const requester = result.replayed
+        ? null
+        : await deviceService.findByDeviceId(result.requester_device_id);
       if (requester?.fcm_token) {
         await fcmService.sendDataNotification(
           requester.fcm_token,
@@ -104,7 +107,8 @@ export class PairingV2Controller {
       success: true,
       current_epoch: result.current_epoch,
       membership_version: result.membership_version,
-      requester_device_id: result.requester_device_id
+      requester_device_id: result.requester_device_id,
+      replayed: result.replayed
     });
   }
 

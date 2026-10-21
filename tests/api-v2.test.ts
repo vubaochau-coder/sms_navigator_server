@@ -1902,4 +1902,148 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       expect(res.status).toBe(404);
     });
   });
+
+  // ---------------------------------------- Rotation idempotency + error details
+  describe('Rotation retry idempotency (last_rotation receipt)', () => {
+    /** Owner opens a QR, member claims it. Returns the request id. */
+    const claimOnly = async (owner: DeviceCtx, channelId: string, member: DeviceCtx): Promise<string> => {
+      const sessionRes = await request(server)
+        .post('/api/v2/channels/sessions')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId });
+      const claimRes = await request(server)
+        .post('/api/v2/pairing/requests')
+        .set(bearer(member.token))
+        .send({
+          session_id: sessionRes.body.session_id,
+          pairing_token: sessionRes.body.pairing_token,
+          device_name: member.deviceName
+        });
+      expect(claimRes.status).toBe(201);
+      return claimRes.body.request_id as string;
+    };
+
+    it('approve retried with the identical package → 200 replayed, no second rotation, no second bell', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      await request(server).put('/api/v2/devices/fcm-token').set(bearer(member.token)).send({ fcm_token: 'fcm_member_retry' });
+      const { channelId } = await createChannel(owner, 'Kênh');
+      const requestId = await claimOnly(owner, channelId, member);
+
+      const pkg = packageFor([owner.deviceId, member.deviceId], 1, 1, 2);
+      const fcmSpy = jest.spyOn(fcmService, 'sendDataNotification');
+
+      const first = await request(server)
+        .post('/api/v2/pairing/requests/approve')
+        .set(bearer(owner.token))
+        .send({ request_id: requestId, package: pkg });
+      expect(first.status).toBe(200);
+      expect(first.body.replayed).toBe(false);
+      const bellsAfterFirst = fcmSpy.mock.calls.length;
+
+      const retry = await request(server)
+        .post('/api/v2/pairing/requests/approve')
+        .set(bearer(owner.token))
+        .send({ request_id: requestId, package: pkg });
+      expect(retry.status).toBe(200);
+      expect(retry.body.replayed).toBe(true);
+      expect(retry.body.current_epoch).toBe(first.body.current_epoch);
+      expect(retry.body.membership_version).toBe(first.body.membership_version);
+      expect(fcmSpy.mock.calls.length).toBe(bellsAfterFirst);
+
+      const state = await channelState(owner.token, channelId);
+      expect(state.current_epoch).toBe(2);
+      expect(state.membership_version).toBe(2);
+      fcmSpy.mockRestore();
+    });
+
+    it('approve retried with a DIFFERENT package is not a replay → 409 REQUEST_NOT_PENDING', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      const requestId = await claimOnly(owner, channelId, member);
+
+      const ok = await request(server)
+        .post('/api/v2/pairing/requests/approve')
+        .set(bearer(owner.token))
+        .send({ request_id: requestId, package: packageFor([owner.deviceId, member.deviceId], 1, 1, 2) });
+      expect(ok.status).toBe(200);
+
+      const other = await request(server)
+        .post('/api/v2/pairing/requests/approve')
+        .set(bearer(owner.token))
+        .send({ request_id: requestId, package: packageFor([owner.deviceId, member.deviceId], 1, 1, 2) });
+      expect(other.status).toBe(409);
+      expect(other.body.error).toBe('REQUEST_NOT_PENDING');
+    });
+
+    it('revoke retried with the identical package → 200 replayed instead of 404', async () => {
+      const owner = await reg('Owner');
+      const b = await reg('B');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, b); // epoch 2, version 2
+
+      const pkg = packageFor([owner.deviceId], 2, 2, 3);
+      const body = { channel_id: channelId, revoke_device_ids: [b.deviceId], package: pkg };
+
+      const first = await request(server).post('/api/v2/channels/revoke').set(bearer(owner.token)).send(body);
+      expect(first.status).toBe(200);
+      expect(first.body.replayed).toBe(false);
+
+      const retry = await request(server).post('/api/v2/channels/revoke').set(bearer(owner.token)).send(body);
+      expect(retry.status).toBe(200);
+      expect(retry.body.replayed).toBe(true);
+      expect(retry.body.current_epoch).toBe(3);
+
+      const state = await channelState(owner.token, channelId);
+      expect(state.current_epoch).toBe(3);
+    });
+
+    it('a retry of an OLDER rotation (another rotation happened since) is rejected, not replayed', async () => {
+      const owner = await reg('Owner');
+      const b = await reg('B');
+      const c = await reg('C');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, b); // epoch 2
+      await joinChannel(owner, channelId, c); // epoch 3, version 3
+
+      const revokeB = { channel_id: channelId, revoke_device_ids: [b.deviceId], package: packageFor([owner.deviceId, c.deviceId], 3, 3, 4) };
+      expect((await request(server).post('/api/v2/channels/revoke').set(bearer(owner.token)).send(revokeB)).status).toBe(200);
+      const revokeC = { channel_id: channelId, revoke_device_ids: [c.deviceId], package: packageFor([owner.deviceId], 4, 4, 5) };
+      expect((await request(server).post('/api/v2/channels/revoke').set(bearer(owner.token)).send(revokeC)).status).toBe(200);
+
+      const lateRetry = await request(server).post('/api/v2/channels/revoke').set(bearer(owner.token)).send(revokeB);
+      expect(lateRetry.status).toBe(404);
+      expect((await channelState(owner.token, channelId)).current_epoch).toBe(5);
+    });
+
+    it('409 MEMBERSHIP_CHANGED carries current_epoch + membership_version', async () => {
+      const owner = await reg('Owner');
+      const b = await reg('B');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, b); // epoch 2, version 2
+
+      const stale = await request(server)
+        .post('/api/v2/channels/revoke')
+        .set(bearer(owner.token))
+        .send({ channel_id: channelId, revoke_device_ids: [b.deviceId], package: packageFor([owner.deviceId], 1, 1, 2) });
+      expect(stale.status).toBe(409);
+      expect(stale.body.error).toBe('MEMBERSHIP_CHANGED');
+      expect(stale.body.current_epoch).toBe(2);
+      expect(stale.body.membership_version).toBe(2);
+      expect(stale.body.success).toBe(false);
+    });
+
+    it('409 EPOCH_OUTDATED carries current_epoch so the relay worker can self-heal', async () => {
+      const owner = await reg('Owner');
+      const b = await reg('B');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, b); // epoch 2
+
+      const stale = await sendMessage(owner, channelId, 1, 'otp-old-epoch');
+      expect(stale.status).toBe(409);
+      expect(stale.body.error).toBe('EPOCH_OUTDATED');
+      expect(stale.body.current_epoch).toBe(2);
+    });
+  });
 });

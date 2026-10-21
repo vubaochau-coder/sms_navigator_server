@@ -31,7 +31,10 @@ export function errorHandler(
     logger.warn(`[Client Error] ${req.method} ${req.originalUrl} responded ${statusCode} (${errorCode}): ${message}`, context);
   }
 
+  // Details never override the envelope keys (success/error/message).
+  const details = err.details && typeof err.details === 'object' ? err.details : {};
   res.status(statusCode).json({
+    ...details,
     success: false,
     error: errorCode,
     message

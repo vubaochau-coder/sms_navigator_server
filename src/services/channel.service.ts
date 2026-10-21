@@ -14,21 +14,20 @@ import { getFirestoreDb } from '../config/firebase.js';
 import { nowIso } from '../utils/time.js';
 import { HttpError } from '../utils/http-error.js';
 import { DeviceEntity } from '../types/index.js';
-import { DEVICES_COLLECTION } from './device.service.js';
+import { assertNotProduction } from '../utils/test-only.js';
+import { channelMembershipService } from './channel-membership.service.js';
+import {
+  DEVICES_COLLECTION,
+  CHANNELS_COLLECTION,
+  CHANNEL_MEMBERS_COLLECTION,
+  CHANNEL_KEY_ENVELOPES_COLLECTION,
+  PAIRING_REQUESTS_COLLECTION,
+  channelMemberDocId,
+  envelopeDocId
+} from './collections.js';
 
-export const CHANNELS_COLLECTION = 'channels';
-export const CHANNEL_MEMBERS_COLLECTION = 'channel_members';
-export const CHANNEL_KEY_ENVELOPES_COLLECTION = 'channel_key_envelopes';
-
-/** Document id per SRD 3.3: `{channelId}__{deviceId}` (double underscore). */
-export function channelMemberDocId(channelId: string, deviceId: string): string {
-  return `${channelId}__${deviceId}`;
-}
-
-/** Document id per SRD 3.6: `{channelId}__{deviceId}__{epoch}`. */
-export function envelopeDocId(channelId: string, deviceId: string, epoch: number): string {
-  return `${channelId}__${deviceId}__${epoch}`;
-}
+// Re-exported for existing importers (tests, other services).
+export { CHANNELS_COLLECTION, CHANNEL_MEMBERS_COLLECTION, CHANNEL_KEY_ENVELOPES_COLLECTION, channelMemberDocId, envelopeDocId };
 
 function channelFromDocument(id: string, data: Record<string, unknown> | undefined): ChannelEntity | null {
   if (!data || typeof data.name !== 'string') return null;
@@ -137,7 +136,8 @@ export function validatePackage(
     throw new HttpError(
       409,
       'MEMBERSHIP_CHANGED',
-      `Package snapshot (epoch ${pkg.base_epoch}, version ${pkg.base_membership_version}) is stale; current is (epoch ${channel.current_epoch}, version ${channel.membership_version})`
+      `Package snapshot (epoch ${pkg.base_epoch}, version ${pkg.base_membership_version}) is stale; current is (epoch ${channel.current_epoch}, version ${channel.membership_version})`,
+      { current_epoch: channel.current_epoch, membership_version: channel.membership_version }
     );
   }
 
@@ -407,7 +407,7 @@ export class ChannelService {
 
       const pendingRequests = await tx.get(
         db
-          .collection('pairing_requests')
+          .collection(PAIRING_REQUESTS_COLLECTION)
           .where('requester_device_id', '==', deviceId)
           .where('status', '==', 'PENDING')
       );
@@ -423,7 +423,7 @@ export class ChannelService {
         ownedChannels.docs.map((doc) =>
           tx.get(
             db
-              .collection('pairing_requests')
+              .collection(PAIRING_REQUESTS_COLLECTION)
               .where('channel_id', '==', doc.id)
               .where('status', '==', 'PENDING')
           )
@@ -500,7 +500,7 @@ export class ChannelService {
     channelId: string,
     revokeDeviceIds: string[],
     pkg: PackageInput
-  ): Promise<{ current_epoch: number; membership_version: number; revoked: string[]; channel_name: string }> {
+  ): Promise<{ current_epoch: number; membership_version: number; revoked: string[]; channel_name: string; replayed: boolean }> {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
@@ -519,6 +519,23 @@ export class ChannelService {
       }
       if (channel.status !== 'ACTIVE') {
         throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
+      }
+
+      // Idempotent retry of the latest committed revoke (response lost to a
+      // timeout): the targets are already REVOKED, so the normal path would
+      // answer 404 — return the committed result instead and write nothing.
+      const replay = channelMembershipService.findReplay(channelDoc.data(), pkg, {
+        kind: 'REVOKE',
+        revokedDeviceIds: revokeDeviceIds
+      });
+      if (replay) {
+        return {
+          current_epoch: replay.new_epoch,
+          membership_version: replay.new_membership_version,
+          revoked: replay.revoked_device_ids ?? [],
+          channel_name: channel.name,
+          replayed: true
+        };
       }
 
       const targets = new Set(revokeDeviceIds);
@@ -561,35 +578,23 @@ export class ChannelService {
           revoked_at: now
         });
       }
-      for (const member of remaining) {
-        tx.update(db.collection(CHANNEL_MEMBERS_COLLECTION).doc(channelMemberDocId(channelId, member.device_id)), {
-          provisioned_epoch: newEpoch
-        });
-      }
-
-      tx.update(channelRef, {
-        current_epoch: newEpoch,
-        membership_version: channel.membership_version + 1,
-        member_count: remaining.length,
-        updated_at: now
+      const committed = channelMembershipService.commitRotation(tx, db, {
+        kind: 'REVOKE',
+        channelId,
+        base: { current_epoch: channel.current_epoch, membership_version: channel.membership_version },
+        pkg,
+        provisionDeviceIds: remaining.map((m) => m.device_id),
+        memberCount: remaining.length,
+        now,
+        revokedDeviceIds: revoked
       });
 
-      for (const envelope of pkg.envelopes) {
-        tx.set(
-          db.collection(CHANNEL_KEY_ENVELOPES_COLLECTION).doc(envelopeDocId(channelId, envelope.device_id, newEpoch)),
-          {
-            channel_id: channelId,
-            ...envelopeToDocInput(envelope),
-            created_at: now
-          }
-        );
-      }
-
       return {
-        current_epoch: newEpoch,
-        membership_version: channel.membership_version + 1,
+        current_epoch: committed.current_epoch,
+        membership_version: committed.membership_version,
         revoked,
-        channel_name: channel.name
+        channel_name: channel.name,
+        replayed: false
       };
     });
   }
@@ -653,6 +658,7 @@ export class ChannelService {
   }
 
   public async clearAll(): Promise<void> {
+    assertNotProduction('channelService.clearAll');
     const db = getFirestoreDb();
     if (!db) return;
     for (const name of [CHANNELS_COLLECTION, CHANNEL_MEMBERS_COLLECTION, CHANNEL_KEY_ENVELOPES_COLLECTION]) {

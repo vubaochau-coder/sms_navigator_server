@@ -3,8 +3,10 @@ import { DeviceEntity } from '../types/index.js';
 import { getFirestoreDb } from '../config/firebase.js';
 import { nowIso, toIsoString } from '../utils/time.js';
 import { logger } from '../utils/logger.js';
+import { assertNotProduction } from '../utils/test-only.js';
+import { DEVICES_COLLECTION } from './collections.js';
 
-export const DEVICES_COLLECTION = 'devices';
+export { DEVICES_COLLECTION };
 
 /** Minimum gap between last_seen_at writes (see touchDevice). */
 export const MIN_TOUCH_INTERVAL_MS = 60_000;
@@ -165,6 +167,7 @@ export class DeviceService {
   }
 
   public async clearAll(): Promise<void> {
+    assertNotProduction('deviceService.clearAll');
     const db = getFirestoreDb();
     if (!db) return;
 
