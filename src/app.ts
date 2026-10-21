@@ -5,6 +5,7 @@ import { env } from './config/env.js';
 import { apiV1Routes } from './routes/api.routes.js';
 import { apiV2Routes } from './routes/v2.routes.js';
 import { healthRoutes } from './routes/health.routes.js';
+import { publicRoutes } from './routes/public.routes.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import { logger } from './utils/logger.js';
 
@@ -54,6 +55,9 @@ export function createApp(): express.Application {
 
   // API v2 routes (Channel 1-to-N E2EE architecture)
   app.use('/api/v2', apiV2Routes);
+
+  // Public HTTPS invite links: App Links / Universal Links + fallback page
+  app.use('/', publicRoutes);
 
   // 404 Handler
   app.use((req: Request, res: Response) => {

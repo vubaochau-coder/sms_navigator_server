@@ -10,6 +10,7 @@ import {
   MessageV2Controller
 } from '../controllers/channel.v2.controller.js';
 import { PairingV2Controller } from '../controllers/pairing.v2.controller.js';
+import { QrV2Controller } from '../controllers/qr.v2.controller.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import {
   deviceRegisterV2Schema,
@@ -27,7 +28,8 @@ import {
   messageSendV2Schema,
   messagesFetchQuerySchema,
   channelRevokeSchema,
-  channelWhitelistUpdateSchema
+  channelWhitelistUpdateSchema,
+  qrResolveQuerySchema
 } from '../schemas/v2.schema.js';
 import {
   v2RegisterRateLimiter,
@@ -152,6 +154,15 @@ router.put(
   v2ApproveRateLimiter,
   validateBody(channelWhitelistUpdateSchema),
   asyncHandler(ChannelV2Controller.updateWhitelist)
+);
+
+// ---- Universal Opaque QR (roadmap v3.3) -------------------------------------
+router.get(
+  '/qr/resolve',
+  authenticate,
+  v2ResolveRateLimiter,
+  validateQuery(qrResolveQuerySchema),
+  asyncHandler(QrV2Controller.resolve)
 );
 
 // ---- Pairing ----------------------------------------------------------------

@@ -19,7 +19,15 @@ const envSchema = z.object({
   // không dùng CORS). Dùng '*' chỉ khi thật sự cần mở cho mọi origin.
   CORS_ORIGIN: z.string().default(''),
   // Public base URL embedded in v2 QR invite payloads (srv= parameter)
-  SERVER_BASE_URL: z.string().default('http://localhost:3000')
+  SERVER_BASE_URL: z.string().default('http://localhost:3000'),
+  // App Links (Android): package + SHA-256 cert fingerprints, comma-separated
+  // (debug, release, Play App Signing). Empty list → assetlinks.json is [].
+  ANDROID_APP_PACKAGE: z.string().default('com.example.sms_navigator'),
+  ANDROID_CERT_SHA256: z.string().default(''),
+  // Universal Links (iOS): comma-separated `TEAMID.bundle.id`.
+  IOS_APP_IDS: z.string().default(''),
+  // Optional "get the app" link on the /qr/:code fallback page.
+  APP_DOWNLOAD_URL: z.string().default('')
 });
 
 export const env = envSchema.parse(process.env);

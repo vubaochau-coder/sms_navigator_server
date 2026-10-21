@@ -14,6 +14,8 @@ export const PAIRING_SESSIONS_COLLECTION = 'pairing_sessions';
 export const PAIRING_REQUESTS_COLLECTION = 'pairing_requests';
 /** One pending-join marker per (channel, requester) — dedup guard for T1. */
 export const PAIRING_PENDING_COLLECTION = 'pairing_pending';
+/** Universal Opaque QR ingress pointers, keyed by sha256(code). */
+export const QR_CODES_COLLECTION = 'qr_codes';
 
 /** Document id per SRD 3.3: `{channelId}__{deviceId}` (double underscore). */
 export function channelMemberDocId(channelId: string, deviceId: string): string {

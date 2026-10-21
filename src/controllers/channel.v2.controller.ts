@@ -210,8 +210,11 @@ export class PairingChannelV2Controller {
     res.status(201).json({
       success: true,
       session_id: session.session_id,
-      pairing_token: session.pairing_token,
       expires_at: session.expires_at,
+      code: session.code,
+      qr_url: session.qr_url,
+      // v4 transition fields — removed at roadmap phase 6
+      pairing_token: session.pairing_token,
       invite_url: session.invite_url
     });
   }

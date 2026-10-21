@@ -15,6 +15,7 @@ import { assertNotProduction } from '../utils/test-only.js';
 import { sha256Hex } from './device.service.js';
 import { validatePackage } from './channel.service.js';
 import { channelMembershipService } from './channel-membership.service.js';
+import { generateQrCode, qrCodeService, qrUrlFor } from './qr-code.service.js';
 import {
   DEVICES_COLLECTION,
   CHANNELS_COLLECTION,
@@ -34,8 +35,14 @@ export const SESSION_TTL_MS = 10 * 60 * 1000;
 
 export interface SessionCreateResult {
   session_id: string;
-  pairing_token: string;
   expires_at: string;
+  /** Opaque QR code (v3.3) — the only secret the new client needs. */
+  code: string;
+  /** Canonical HTTPS invite link rendered into the QR. */
+  qr_url: string;
+  /** @deprecated v4 transition — removed at roadmap phase 6. */
+  pairing_token: string;
+  /** @deprecated v4 `smsnavigator://pair?v=4…` — removed at roadmap phase 6. */
   invite_url: string;
 }
 
@@ -100,6 +107,7 @@ export class PairingV2Service {
     const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
     const sessionId = randomUUID();
     const pairingToken = randomBytes(16).toString('hex'); // 128-bit raw token
+    const code = generateQrCode();
     const now = nowIso();
     const expiresAtMs = Date.now() + SESSION_TTL_MS;
     const expiresAt = new Date(expiresAtMs).toISOString();
@@ -134,6 +142,15 @@ export class PairingV2Service {
         expires_at: expiresAt,
         created_at: now
       });
+
+      qrCodeService.writePointer(tx, db, {
+        code,
+        type: 'PAIRING',
+        targetId: sessionId,
+        expiresAt,
+        createdBy: ownerId,
+        now
+      });
     });
 
     const inviteUrl =
@@ -142,7 +159,14 @@ export class PairingV2Service {
       `&u=${base64UrlEncode(env.SERVER_BASE_URL)}` +
       `&e=${expiresAtMs}`;
 
-    return { session_id: sessionId, pairing_token: pairingToken, expires_at: expiresAt, invite_url: inviteUrl };
+    return {
+      session_id: sessionId,
+      expires_at: expiresAt,
+      code,
+      qr_url: qrUrlFor(code),
+      pairing_token: pairingToken,
+      invite_url: inviteUrl
+    };
   }
 
   /**
@@ -157,17 +181,35 @@ export class PairingV2Service {
     sessionId: string,
     pairingToken: string
   ): Promise<SessionResolveResult> {
+    return this.previewSession(requesterDeviceId, sessionId, sha256Hex(pairingToken));
+  }
+
+  /**
+   * GET /qr/resolve (roadmap v3.3 §2.3.B): same read-only preview, reached
+   * through an opaque QR code. The code itself was the bearer secret, so no
+   * pairing token is checked — and none is ever returned to the client.
+   */
+  public async previewByCode(requesterDeviceId: string, code: string): Promise<SessionResolveResult> {
+    const pointer = await qrCodeService.findActive(code);
+    return this.previewSession(requesterDeviceId, pointer.target_id, null);
+  }
+
+  /** Shared preview checks. `tokenHash === null` → caller already proved possession via a QR code. */
+  private async previewSession(
+    requesterDeviceId: string,
+    sessionId: string,
+    tokenHash: string | null
+  ): Promise<SessionResolveResult> {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
-    const tokenHash = sha256Hex(pairingToken);
     const sessionRef = db.collection(PAIRING_SESSIONS_COLLECTION).doc(sessionId);
     const sessionDoc = await sessionRef.get();
     if (!sessionDoc.exists) {
       throw new HttpError(404, 'NOT_FOUND', 'Pairing session does not exist');
     }
     const session = sessionDoc.data() as Partial<PairingSessionEntity>;
-    if (String(session.pairing_token_hash ?? '') !== tokenHash) {
+    if (tokenHash !== null && String(session.pairing_token_hash ?? '') !== tokenHash) {
       throw new HttpError(404, 'NOT_FOUND', 'Pairing token does not match this session');
     }
     if (session.status === 'CLAIMED') {
@@ -239,11 +281,32 @@ export class PairingV2Service {
     pairingToken: string,
     deviceName: string
   ): Promise<ClaimResult> {
+    return this.claim(requesterDeviceId, requesterPublicKey, sessionId, sha256Hex(pairingToken), deviceName);
+  }
+
+  /** T1 via opaque QR code (roadmap v3.3 §2.3.C): `POST /pairing/requests { code }`. */
+  public async claimByCode(
+    requesterDeviceId: string,
+    requesterPublicKey: string,
+    code: string,
+    deviceName: string
+  ): Promise<ClaimResult> {
+    const pointer = await qrCodeService.findActive(code);
+    return this.claim(requesterDeviceId, requesterPublicKey, pointer.target_id, null, deviceName);
+  }
+
+  /** Shared T1 transaction. `tokenHash === null` → possession proved via a QR code. */
+  private async claim(
+    requesterDeviceId: string,
+    requesterPublicKey: string,
+    sessionId: string,
+    tokenHash: string | null,
+    deviceName: string
+  ): Promise<ClaimResult> {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
     const now = nowIso();
-    const tokenHash = sha256Hex(pairingToken);
 
     return db.runTransaction(async (tx): Promise<ClaimResult> => {
       const sessionRef = db.collection(PAIRING_SESSIONS_COLLECTION).doc(sessionId);
@@ -252,7 +315,7 @@ export class PairingV2Service {
         throw new HttpError(404, 'NOT_FOUND', 'Pairing session does not exist');
       }
       const session = sessionDoc.data() as Partial<PairingSessionEntity>;
-      if (String(session.pairing_token_hash ?? '') !== tokenHash) {
+      if (tokenHash !== null && String(session.pairing_token_hash ?? '') !== tokenHash) {
         throw new HttpError(404, 'NOT_FOUND', 'Pairing token does not match this session');
       }
       if (session.status === 'CLAIMED') {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { QR_CODE_PATTERN } from '../services/qr-code.service.js';
 import { KEK_ALG } from '../types/v2.js';
 
 /** Base64 string decoding to exactly `bytes` bytes. */
@@ -87,11 +88,23 @@ export const channelSessionResolveSchema = z.object({
   pairing_token: z.string().min(1)
 });
 
-/** POST /pairing/requests — T1 claim (API spec §5.1). */
+/**
+ * POST /pairing/requests — T1 claim (API spec §5.1).
+ * Either `code` (opaque QR, roadmap v3.3) or the v4 pair
+ * `session_id` + `pairing_token` (removed at roadmap phase 6). The
+ * either/or rule is enforced in the controller (validateBody needs a plain
+ * ZodObject).
+ */
 export const pairingRequestClaimSchema = z.object({
-  session_id: z.string().min(1),
-  pairing_token: z.string().min(1),
+  code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string').optional(),
+  session_id: z.string().min(1).optional(),
+  pairing_token: z.string().min(1).optional(),
   device_name: z.string().trim().min(1).max(128)
+});
+
+/** GET /qr/resolve?code= — opaque QR preview (roadmap v3.3 §2.3.B). */
+export const qrResolveQuerySchema = z.object({
+  code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string')
 });
 
 export const channelRequestsQuerySchema = z.object({
