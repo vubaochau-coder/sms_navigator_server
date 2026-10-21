@@ -143,6 +143,12 @@ export const messagesFetchQuerySchema = z.object({
   tz_offset: z.coerce.number().int().min(-14 * 60).max(14 * 60).optional().default(0)
 });
 
+/** GET /channels/message — one message for the notification handler (§6.4). */
+export const messageFetchOneQuerySchema = z.object({
+  channel_id: z.string().min(1, 'channel_id is required'),
+  sequence_number: z.coerce.number().int().positive()
+});
+
 /** POST /channels/revoke — T4 Owner package with rotate (§4.6). */
 export const channelRevokeSchema = z.object({
   channel_id: z.string().min(1),

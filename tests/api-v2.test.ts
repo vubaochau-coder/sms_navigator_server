@@ -1466,14 +1466,14 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       expect(second.body.sequence_number).toBe(2);
     });
 
-    it('sends FCM notification block to active members including owner upon new message', async () => {
-      const owner = await reg('Owner Alice');
+    it('NEW_MESSAGE bell: data-only for Android, notification block for iOS, never ciphertext (I5)', async () => {
+      const owner = await reg('Owner Alice', 'android');
       await request(server)
         .put('/api/v2/devices/fcm-token')
         .set(bearer(owner.token))
         .send({ fcm_token: 'fcm_owner_token_new_msg' });
 
-      const member = await reg('Member Bob');
+      const member = await reg('Member Bob', 'ios');
       await request(server)
         .put('/api/v2/devices/fcm-token')
         .set(bearer(member.token))
@@ -1487,39 +1487,105 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       const msgRes = await sendMessage(owner, channelId, 2, 'fresh-otp');
       expect(msgRes.status).toBe(201);
 
-      // Verify owner received FCM notification block
-      expect(fcmSpy).toHaveBeenCalledWith(
-        'fcm_owner_token_new_msg',
-        expect.objectContaining({
-          type: 'CHANNEL_EVENT',
-          channel_id: channelId,
-          channel_name: 'Kênh Test FCM Msg',
-          kind: 'NEW_MESSAGE'
-        }),
-        expect.objectContaining({
-          title: 'Tin nhắn SMS mới',
-          body: 'Có tin nhắn SMS mới từ kênh "Kênh Test FCM Msg". Chạm để xem.'
-        })
-      );
+      const expectedData = {
+        type: 'CHANNEL_EVENT',
+        channel_id: channelId,
+        channel_name: 'Kênh Test FCM Msg',
+        kind: 'NEW_MESSAGE',
+        sequence_number: String(msgRes.body.sequence_number),
+        sender_device_id: owner.deviceId
+      };
 
-      // Verify member received FCM notification block
-      expect(fcmSpy).toHaveBeenCalledWith(
-        'fcm_member_token_new_msg',
-        expect.objectContaining({
-          type: 'CHANNEL_EVENT',
-          channel_id: channelId,
-          channel_name: 'Kênh Test FCM Msg',
-          kind: 'NEW_MESSAGE'
-        }),
-        expect.objectContaining({
-          title: 'Tin nhắn SMS mới',
-          body: 'Có tin nhắn SMS mới từ kênh "Kênh Test FCM Msg". Chạm để xem.'
-        })
-      );
+      // Android: data-only so the app renders the decrypted OTP itself
+      expect(fcmSpy).toHaveBeenCalledWith('fcm_owner_token_new_msg', expectedData, undefined);
+
+      // iOS: OS-rendered generic banner
+      expect(fcmSpy).toHaveBeenCalledWith('fcm_member_token_new_msg', expectedData, {
+        title: 'Tin nhắn SMS mới',
+        body: 'Có tin nhắn SMS mới từ kênh "Kênh Test FCM Msg". Chạm để xem.'
+      });
+
+      // I5: the bell never carries ciphertext / nonce / key material
+      for (const call of fcmSpy.mock.calls) {
+        const keys = Object.keys(call[1]);
+        expect(keys).not.toContain('ciphertext');
+        expect(keys).not.toContain('nonce');
+        expect(JSON.stringify(call[1])).not.toContain(Buffer.from('fresh-otp').toString('base64'));
+      }
 
       fcmSpy.mockRestore();
     });
+  });
 
+  describe('GET /api/v2/channels/message?channel_id=&sequence_number= (§6.4)', () => {
+    it('returns exactly one message for an ACTIVE member', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh nhà');
+      await joinChannel(owner, channelId, member);
+      await sendMessage(owner, channelId, 2, 'otp-1');
+      const second = await sendMessage(owner, channelId, 2, 'otp-2');
+
+      const res = await request(server)
+        .get(`/api/v2/channels/message?channel_id=${channelId}&sequence_number=${second.body.sequence_number}`)
+        .set(bearer(member.token));
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.message).toMatchObject({
+        channel_id: channelId,
+        channel_name: 'Kênh nhà',
+        sequence_number: second.body.sequence_number,
+        key_epoch: 2,
+        ciphertext: Buffer.from('otp-2').toString('base64'),
+        sender_device_id: owner.deviceId
+      });
+      expect(res.body.message.nonce).toBeTruthy();
+    });
+
+    it('404 for an unknown sequence number or a non-member; 403 once revoked', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const outsider = await reg('Outsider');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, member);
+      const sent = await sendMessage(owner, channelId, 2, 'secret');
+      const url = `/api/v2/channels/message?channel_id=${channelId}&sequence_number=${sent.body.sequence_number}`;
+
+      const missing = await request(server)
+        .get(`/api/v2/channels/message?channel_id=${channelId}&sequence_number=999`)
+        .set(bearer(member.token));
+      expect(missing.status).toBe(404);
+
+      const foreign = await request(server).get(url).set(bearer(outsider.token));
+      expect(foreign.status).toBe(404);
+
+      await request(server)
+        .post('/api/v2/channels/revoke')
+        .set(bearer(owner.token))
+        .send({
+          channel_id: channelId,
+          revoke_device_ids: [member.deviceId],
+          package: packageFor([owner.deviceId], 2, 2, 3)
+        });
+      const revoked = await request(server).get(url).set(bearer(member.token));
+      expect(revoked.status).toBe(403);
+      expect(revoked.body.error).toBe('REVOKED');
+    });
+
+    it('400 on invalid query; 401 without token', async () => {
+      const owner = await reg('Owner');
+      const bad = await request(server)
+        .get('/api/v2/channels/message?channel_id=x&sequence_number=abc')
+        .set(bearer(owner.token));
+      expect(bad.status).toBe(400);
+
+      const noAuth = await request(server).get('/api/v2/channels/message?channel_id=x&sequence_number=1');
+      expect(noAuth.status).toBe(401);
+    });
+  });
+
+  describe('POST /api/v2/channels/messages — validation & auth', () => {
     it('409 REPLAY_DETECTED for the same (channel|nonce|ciphertext) within 24h', async () => {
       const owner = await reg('Owner');
       const { channelId } = await createChannel(owner, 'Kênh');
