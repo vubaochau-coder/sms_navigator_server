@@ -47,7 +47,7 @@
 
 ## 4. Hạng mục đã hoàn thành (tham khảo — đừng làm lại)
 
-- **22/10/2026** (`chore/backlog-cleanup`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
+- **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
 - **Nhánh `feat/otp-notification`** (chưa merge, xem 0.2): `NEW_MESSAGE` data-only cho Android kèm `sequence_number` + `sender_device_id`; `GET /api/v2/channels/message` (§6.4).
 - **21/10/2026** (đã lên `main`):
   - Universal Opaque QR v3.3: con trỏ `qr_codes/{sha256(code)}`, `GET /api/v2/qr/resolve`, claim bằng `code`, `/qr/:code` fallback, `/.well-known/assetlinks.json` + AASA (từ env).
