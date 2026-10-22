@@ -121,6 +121,8 @@ export interface ChannelListItem {
   member_count: number;
   my_joined_epoch: number;
   owner_device_name: string;
+  /** Opaque E2EE blob (server never reads it) so the list can show whitelist chips. */
+  whitelist: ChannelWhitelistBlob | null;
 }
 
 /**
@@ -351,7 +353,8 @@ export class ChannelService {
         membership_version: channel.membership_version,
         member_count: channel.member_count,
         my_joined_epoch: membership.joined_epoch,
-        owner_device_name: ownerNameById.get(channel.owner_device_id) ?? ''
+        owner_device_name: ownerNameById.get(channel.owner_device_id) ?? '',
+        whitelist: channel.whitelist ?? null
       });
     }
     return items.sort((a, b) => a.name.localeCompare(b.name));

@@ -26,7 +26,10 @@ export class ChannelV2Controller {
     });
   }
 
-  /** GET /api/v2/channels — ACTIVE memberships of the caller, grouped by role client-side (§4.2). */
+  /**
+   * GET /api/v2/channels — ACTIVE memberships of the caller, grouped by role client-side (§4.2).
+   * Carries the opaque whitelist blob so clients can label channels without N detail calls.
+   */
   public static async listChannels(req: Request, res: Response): Promise<void> {
     const device = req.device!;
     const channels = await channelService.listChannelsForDevice(device);
@@ -42,7 +45,8 @@ export class ChannelV2Controller {
         membership_version: channel.membership_version,
         member_count: channel.member_count,
         my_joined_epoch: channel.my_joined_epoch,
-        owner_device_name: channel.owner_device_name
+        owner_device_name: channel.owner_device_name,
+        whitelist: channel.whitelist
       }))
     });
   }

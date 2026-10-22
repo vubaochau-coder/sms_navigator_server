@@ -127,6 +127,31 @@ describe('PUT /api/v2/channels/whitelist & GET /api/v2/channels/detail (Whitelis
     });
   });
 
+  it('includes the opaque whitelist blob in GET /channels for owner and members', async () => {
+    const owner = await reg('Owner Device');
+    const channelId = await createChannel(owner);
+
+    const before = await request(server).get('/api/v2/channels').set(bearer(owner.token));
+    expect(before.status).toBe(200);
+    expect(before.body.channels[0].whitelist).toBeNull();
+
+    const nonce = nonce12();
+    const ciphertext = Buffer.from('encrypted_whitelist_data').toString('base64');
+    await request(server)
+      .put('/api/v2/channels/whitelist')
+      .set(bearer(owner.token))
+      .send({ channel_id: channelId, key_epoch: 1, ciphertext, nonce, whitelist_version: 1 })
+      .expect(200);
+
+    const after = await request(server).get('/api/v2/channels').set(bearer(owner.token));
+    expect(after.body.channels[0].whitelist).toMatchObject({
+      key_epoch: 1,
+      ciphertext,
+      nonce,
+      whitelist_version: 1
+    });
+  });
+
   it('rejects non-owner with 403 NOT_OWNER', async () => {
     const owner = await reg('Owner Device');
     const stranger = await reg('Stranger Device');
