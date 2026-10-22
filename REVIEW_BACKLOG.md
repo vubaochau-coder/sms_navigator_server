@@ -87,3 +87,16 @@
 - [ ] Jest `fcm.test.ts` — "counts sent / failed / no_token".
 - [ ] Render logs: duyệt 1 thành viên → thấy dòng `APPROVED bells … sent=1`.
 
+## P3-2 · Báo cáo thiết bị đã gỡ app (BACKLOG §1)
+
+**Quyết định** ⚠️: chỉ **báo cáo**, không tự revoke / xoá — backlog ghi rõ đây là quyết định nghiệp vụ, và máy khôi phục từ bản sao lưu dùng lại `device_id` cũ.
+
+**Rà soát**
+- [ ] `StaleDeviceService.findStaleDevices(days)`: `last_seen_at < now − days` **và** không còn `fcm_token` (token tự xoá khi FCM báo unregistered) → kèm kênh ACTIVE (+ có phải Owner không). Không ghi Firestore.
+- [ ] Script `npm run report:stale-devices -- 60` (tsx, dùng credential Firebase như server), in JSON.
+- [ ] ⚠️ Query `devices where last_seen_at <` cần index đơn trường (Firestore tự tạo) — chạy được trên production.
+
+**Kiểm thử**
+- [ ] Jest `stale-devices.test.ts`.
+- [ ] Chạy với service account production (máy dev): `FIREBASE_SERVICE_ACCOUNT_PATH=… npm run report:stale-devices -- 60`.
+

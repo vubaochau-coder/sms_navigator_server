@@ -15,11 +15,9 @@
 
 ---
 
-## 1. Vòng đời thiết bị sau uninstall — job dọn định kỳ (tuỳ chọn)
+## 1. Vòng đời thiết bị sau uninstall — quyết định nghiệp vụ
 
-- Token chết đã tự xoá khi FCM báo `registration-token-not-registered` / `invalid-registration-token` (`FcmService` → `deviceService.clearFcmToken`, so-khớp-rồi-xoá trong transaction: token mới upload sau đó được giữ).
-- Còn lại: job dọn định kỳ device không `last_seen_at` quá N ngày + không còn token → review membership/envelope cleanup (chỉ dọn token, không tự revoke membership — quyết định nghiệp vụ).
-- Lưu ý từ backup/khôi phục (mobile 1.1): máy khôi phục dùng lại `device_id` + `device_token` cũ và gửi FCM token mới — **không** được coi đó là thiết bị mới.
+- Đã có báo cáo chỉ-đọc `npm run report:stale-devices -- <days>` (xem mục 4). Còn lại: **quyết định** có tự revoke membership của thiết bị "stale" hay không (lưu ý máy khôi phục từ bản sao lưu quay lại với cùng `device_id`). Chưa có job tự động.
 
 ---
 
@@ -46,6 +44,7 @@
   - Vòng đời kênh: `POST /channels/leave` (REVOKED + `rotation_pending`, bell MEMBER_LEFT), `POST /channels/rotate` (Owner re-key), `POST /channels/archive` (terminal, huỷ invite/request, ẩn tin, bell REVOKED/ARCHIVED); chặn tạo QR trên kênh đã giải tán; spec §4.9–4.11 — cũ: mục 2.2.
   - Lịch sử request đã xử lý: `GET /channels/requests?status=HISTORY` + phân trang `limit`/`before`, item có `status`/`decided_at`; spec §5.3 — cũ: mục 2.3.
   - Log đếm bell `targets/sent/failed/no_token` cho mọi loại qua `FcmService.bellDevices` / `logBellCounts` — cũ: mục 3.1.
+  - Báo cáo chỉ-đọc thiết bị đã gỡ app (`last_seen_at` quá N ngày + không còn FCM token, kèm kênh ACTIVE): `npm run report:stale-devices -- <days>` — cũ: mục 1 (phần job dọn; tự revoke vẫn chờ quyết định).
 - **22/10/2026**: `ANDROID_CERT_SHA256` đã đặt trên Render (SHA release + debug máy build); `assetlinks.json` production đúng, máy test báo App Links `verified` (cũ: mục 0.1). Đổi keystore/máy build → chạy lại `scripts/print_android_sha256.sh` của repo mobile và cập nhật biến.
 - **22/10/2026**: tự xoá FCM token chết (cũ: bước 1 mục 1); log đếm bell `NEW_MESSAGE` (một phần mục 3.1).
 - **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
