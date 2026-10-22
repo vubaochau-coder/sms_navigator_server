@@ -137,6 +137,11 @@ export interface ChannelListItem {
   owner_device_name: string;
   /** Opaque E2EE blob (server never reads it) so the list can show whitelist chips. */
   whitelist: ChannelWhitelistBlob | null;
+  /**
+   * A member left and the Owner still has to rotate. Lets the Owner's relay
+   * sync skip `GET /channels/detail` per channel on every run (FLOW_AUDIT P2).
+   */
+  rotation_pending: boolean;
 }
 
 /**
@@ -368,7 +373,8 @@ export class ChannelService {
         member_count: channel.member_count,
         my_joined_epoch: membership.joined_epoch,
         owner_device_name: ownerNameById.get(channel.owner_device_id) ?? '',
-        whitelist: channel.whitelist ?? null
+        whitelist: channel.whitelist ?? null,
+        rotation_pending: channel.rotation_pending === true
       });
     }
     return items.sort((a, b) => a.name.localeCompare(b.name));

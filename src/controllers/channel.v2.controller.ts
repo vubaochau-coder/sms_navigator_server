@@ -46,7 +46,8 @@ export class ChannelV2Controller {
         member_count: channel.member_count,
         my_joined_epoch: channel.my_joined_epoch,
         owner_device_name: channel.owner_device_name,
-        whitelist: channel.whitelist
+        whitelist: channel.whitelist,
+        rotation_pending: channel.rotation_pending
       }))
     });
   }

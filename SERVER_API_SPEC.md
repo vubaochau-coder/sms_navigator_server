@@ -177,11 +177,15 @@ xuất hiện ở đây (đã có mã `403 REVOKED` khi đụng API kênh).
   "membership_version": 4, "member_count": 2, "my_joined_epoch": 2,
   "owner_device_name": "...",
   "whitelist": null | { "key_epoch": 3, "ciphertext": "...", "nonce": "...",
-                        "whitelist_version": 2, "updated_at": "..." } } ] }
+                        "whitelist_version": 2, "updated_at": "..." },
+  "rotation_pending": false } ] }
 ```
 
 `whitelist` là blob E2EE y hệt trong `GET /channels/detail` (server không đọc) —
 client giải mã bằng channel key để hiện các pill white-list trên danh sách kênh.
+`rotation_pending` (Owner): có member tự rời mà chưa xoay khoá. Hai field này đủ
+để đồng bộ relay của Owner **không** phải gọi `GET /channels/detail` cho từng
+kênh mỗi lần (FLOW_AUDIT P2).
 
 ### 4.3. `GET /api/v2/channels/detail?channel_id={id}` 🔒
 

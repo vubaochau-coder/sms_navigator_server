@@ -1278,6 +1278,17 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
     });
   });
 
+  describe('GET /api/v2/channels — relay metadata (FLOW_AUDIT P2)', () => {
+    it('carries rotation_pending so the owner sync needs no per-channel detail', async () => {
+      const owner = await reg('Owner');
+      await createChannel(owner, 'Kênh');
+      const res = await request(server).get('/api/v2/channels').set(bearer(owner.token));
+      expect(res.status).toBe(200);
+      expect(res.body.channels[0].rotation_pending).toBe(false);
+      expect(res.body.channels[0]).toHaveProperty('whitelist');
+    });
+  });
+
   describe('GET /api/v2/key-envelopes (§6.1b)', () => {
     const envelopesOf = async (token: string, query = '') => {
       const res = await request(server).get(`/api/v2/key-envelopes${query}`).set(bearer(token));
