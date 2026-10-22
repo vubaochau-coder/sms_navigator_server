@@ -5,7 +5,7 @@ import { nowIso, msToIso, dayRange } from '../utils/time.js';
 import { HttpError } from '../utils/http-error.js';
 import { replayGuardService } from './replay-guard.service.js';
 import { deviceService } from './device.service.js';
-import { fcmService } from './fcm.service.js';
+import { fcmService, logBellCounts } from './fcm.service.js';
 import { logger } from '../utils/logger.js';
 import { assertNotProduction } from '../utils/test-only.js';
 import { channelService } from './channel.service.js';
@@ -179,10 +179,12 @@ export class MessageV2Service {
         )
       );
       const sent = messageIds.filter(Boolean).length;
-      logger.info(
-        `[MessageV2] NEW_MESSAGE bells for channel ${channelId}: members=${members.length} ` +
-          `sent=${sent} failed=${messageIds.length - sent} no_token=${members.length - reachable.length}`
-      );
+      logBellCounts('NEW_MESSAGE', channelId, {
+        targets: members.length,
+        sent,
+        failed: messageIds.length - sent,
+        no_token: members.length - reachable.length
+      });
     } catch (error) {
       // Best-effort: FCM is a wake-up signal, never part of the consistency path (N8)
       logger.warn('[MessageV2] Failed to send NEW_MESSAGE bells:', { error: String(error) });
@@ -199,6 +201,11 @@ export class MessageV2Service {
     if (!db) throw new Error('Firestore is not available');
 
     await channelService.requireActiveMember(channelId, deviceId);
+    const channel = await channelService.findChannelById(channelId);
+    if (channel?.status !== 'ACTIVE') {
+      // Archived (§4.11): history is no longer served
+      throw new HttpError(404, 'NOT_FOUND', 'This channel has been archived');
+    }
 
     const snapshot = await db
       .collection(CHANNEL_MESSAGES_COLLECTION)
@@ -211,10 +218,9 @@ export class MessageV2Service {
       throw new HttpError(404, 'NOT_FOUND', `Message #${sequenceNumber} does not exist in this channel`);
     }
 
-    const channel = await channelService.findChannelById(channelId);
     return {
       channel_id: entity.channel_id,
-      channel_name: channel?.name ?? '',
+      channel_name: channel.name,
       sequence_number: entity.sequence_number,
       key_epoch: entity.key_epoch,
       ciphertext: entity.ciphertext,
@@ -249,9 +255,16 @@ export class MessageV2Service {
       .where('device_id', '==', deviceId)
       .where('status', '==', 'ACTIVE')
       .get();
-    const channelIds = Array.from(
+    const memberChannelIds = Array.from(
       new Set(memberships.docs.map((doc) => String(doc.data()?.channel_id ?? '')).filter(Boolean))
     );
+    // Batched channel lookup (names + status): archived channels (§4.11) are skipped
+    const channelDocs = await Promise.all(memberChannelIds.map((id) => channelService.findChannelById(id)));
+    const channelNameById = new Map<string, string>();
+    for (const channel of channelDocs) {
+      if (channel && channel.status === 'ACTIVE') channelNameById.set(channel.channel_id, channel.name);
+    }
+    const channelIds = memberChannelIds.filter((id) => channelNameById.has(id));
     if (channelIds.length === 0) {
       return { date, messages: [], truncated: false };
     }
@@ -280,13 +293,6 @@ export class MessageV2Service {
 
     const truncated = entities.length > MESSAGES_DAY_CAP;
     const capped = truncated ? entities.slice(0, MESSAGES_DAY_CAP) : entities;
-
-    // Batched channel-name lookup (no per-channel sequential read)
-    const channelDocs = await Promise.all(channelIds.map((id) => channelService.findChannelById(id)));
-    const channelNameById = new Map<string, string>();
-    for (const channel of channelDocs) {
-      if (channel) channelNameById.set(channel.channel_id, channel.name);
-    }
 
     const messages: FetchedMessage[] = capped.map((entity) => ({
       channel_id: entity.channel_id,

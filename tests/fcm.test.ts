@@ -3,6 +3,7 @@
 import { deviceService } from '../src/services/device.service.js';
 import { FcmService, isDeadTokenError } from '../src/services/fcm.service.js';
 import type { FcmTransport } from '../src/services/fcm.service.js';
+import { logger } from '../src/utils/logger.js';
 
 const fcmError = (code: string): Error & { code: string } => Object.assign(new Error(code), { code });
 
@@ -61,5 +62,33 @@ describe('FcmService dead-token cleanup (BACKLOG §2)', () => {
 
     await expect(deviceService.clearFcmToken('old-token')).resolves.toBe(0);
     expect((await deviceService.findByDeviceId(device.device_id))?.fcm_token).toBe('new-token');
+  });
+});
+
+describe('FcmService.bellDevices (BACKLOG 3.1)', () => {
+  beforeEach(async () => {
+    await deviceService.clearAll();
+  });
+
+  it('counts sent / failed / no_token and logs one line', async () => {
+    const { device: ok } = await deviceService.registerDevice({ device_name: 'A', fcm_token: 'tok-ok' });
+    const { device: bad } = await deviceService.registerDevice({ device_name: 'B', fcm_token: 'tok-bad' });
+    const { device: none } = await deviceService.registerDevice({ device_name: 'C' });
+    const transport: FcmTransport = async (message) => {
+      if ('token' in message && message.token === 'tok-bad') throw fcmError('messaging/internal-error');
+      return 'id';
+    };
+    const service = new FcmService(transport);
+    const logSpy = jest.spyOn(logger, 'info');
+
+    const counts = await service.bellDevices('JOIN_REQUEST', 'ch-1', [ok.device_id, bad.device_id, none.device_id, 'ghost'], {
+      type: 'X'
+    });
+
+    expect(counts).toEqual({ targets: 4, sent: 1, failed: 1, no_token: 2 });
+    expect(logSpy).toHaveBeenCalledWith(
+      '[FCM] JOIN_REQUEST bells for channel ch-1: targets=4 sent=1 failed=1 no_token=2'
+    );
+    logSpy.mockRestore();
   });
 });

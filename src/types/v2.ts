@@ -45,6 +45,9 @@ export interface ChannelEntity {
   created_at: string;
   updated_at: string;
   whitelist?: ChannelWhitelistBlob;
+  /** A member left without a rotation (POST /channels/leave): Owner must rotate (POST /channels/rotate). */
+  rotation_pending?: boolean;
+  archived_at?: string;
 }
 
 /** SRD 3.3 — channel_members/{channelId}__{deviceId}. */
@@ -64,7 +67,8 @@ export interface ChannelMemberEntity {
 export interface PairingSessionEntity {
   session_id: string;
   channel_id: string;
-  pairing_token_hash: string; // SHA-256 of the raw 128-bit pairing token
+  /** Legacy v4 sessions only (removed at roadmap phase 6); never written now. */
+  pairing_token_hash?: string;
   status: SessionStatus;
   claimed_by_device_id?: string;
   request_id?: string;

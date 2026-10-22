@@ -18,13 +18,16 @@ import {
   deviceNameV2Schema,
   channelCreateSchema,
   channelIdQuerySchema,
+  channelRenameSchema,
+  channelIdBodySchema,
+  channelRotateSchema,
   channelSessionCreateSchema,
-  channelSessionResolveSchema,
   pairingRequestClaimSchema,
   channelRequestsQuerySchema,
   pairingApproveSchema,
   pairingRequestIdSchema,
   keyEnvelopeQuerySchema,
+  keyEnvelopesQuerySchema,
   messageSendV2Schema,
   messagesFetchQuerySchema,
   messageFetchOneQuerySchema,
@@ -96,6 +99,15 @@ router.get(
   asyncHandler(ChannelV2Controller.getDetail)
 );
 
+// PUT /api/v2/channels/name — Owner renames the channel (display-only)
+router.put(
+  '/channels/name',
+  authenticate,
+  v2NameRateLimiter,
+  validateBody(channelRenameSchema),
+  asyncHandler(ChannelV2Controller.rename)
+);
+
 router.get(
   '/channels/members',
   authenticate,
@@ -117,20 +129,21 @@ router.get(
   asyncHandler(ChannelV2Controller.getKeyEnvelope)
 );
 
+// GET /api/v2/key-envelopes — every envelope of the caller in one call (§6.1b)
+router.get(
+  '/key-envelopes',
+  authenticate,
+  v2ReadRateLimiter,
+  validateQuery(keyEnvelopesQuerySchema),
+  asyncHandler(ChannelV2Controller.listKeyEnvelopes)
+);
+
 router.post(
   '/channels/sessions',
   authenticate,
   v2SessionRateLimiter,
   validateBody(channelSessionCreateSchema),
   asyncHandler(PairingChannelV2Controller.createSession)
-);
-
-router.post(
-  '/channels/sessions/resolve',
-  authenticate,
-  v2ResolveRateLimiter,
-  validateBody(channelSessionResolveSchema),
-  asyncHandler(PairingChannelV2Controller.resolveSession)
 );
 
 router.post(
@@ -156,6 +169,33 @@ router.post(
   v2ApproveRateLimiter,
   validateBody(channelRevokeSchema),
   asyncHandler(ChannelV2Controller.revoke)
+);
+
+// POST /api/v2/channels/leave — member leaves (Owner must rotate afterwards)
+router.post(
+  '/channels/leave',
+  authenticate,
+  v2ApproveRateLimiter,
+  validateBody(channelIdBodySchema),
+  asyncHandler(ChannelV2Controller.leave)
+);
+
+// POST /api/v2/channels/rotate — Owner re-key without membership change
+router.post(
+  '/channels/rotate',
+  authenticate,
+  v2ApproveRateLimiter,
+  validateBody(channelRotateSchema),
+  asyncHandler(ChannelV2Controller.rotate)
+);
+
+// POST /api/v2/channels/archive — Owner dissolves the channel (terminal)
+router.post(
+  '/channels/archive',
+  authenticate,
+  v2ApproveRateLimiter,
+  validateBody(channelIdBodySchema),
+  asyncHandler(ChannelV2Controller.archive)
 );
 
 router.put(

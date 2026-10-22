@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { DeviceEntity } from '../types/index.js';
 import { getFirestoreDb } from '../config/firebase.js';
+import { HttpError } from '../utils/http-error.js';
 import { nowIso, toIsoString } from '../utils/time.js';
 import { logger } from '../utils/logger.js';
 import { assertNotProduction } from '../utils/test-only.js';
@@ -53,7 +54,20 @@ function fromDocument(id: string, data: Record<string, unknown> | undefined): De
 }
 
 export class DeviceService {
-  public async registerDevice(input: DeviceRegisterInput): Promise<{ device: DeviceEntity; token: string }> {
+  /**
+   * Creates a device, or — for a `device_id` that already exists — rotates its
+   * token. Rotation requires proof of possession: [presentedToken] must be the
+   * device's current token. Without it the call is refused (409
+   * `DEVICE_EXISTS`): `device_id`s are visible to every channel member, so an
+   * unauthenticated re-register would let anyone take a device over (and swap
+   * its public key so future envelopes are wrapped for them — FLOW_AUDIT S1).
+   * A rotation never changes the stored `public_key` (identity is immutable
+   * per `device_id`; a new identity means a new device — SRD §8.2).
+   */
+  public async registerDevice(
+    input: DeviceRegisterInput,
+    options: { presentedToken?: string } = {}
+  ): Promise<{ device: DeviceEntity; token: string }> {
     const token = randomBytes(32).toString('hex');
     const tokenHash = sha256Hex(token);
     const now = nowIso();
@@ -62,14 +76,24 @@ export class DeviceService {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
-    // Re-registration invalidates the previously issued token: the doc is
-    // overwritten with the new token_hash, so the old hash stops matching.
     const existing = await this.findByDeviceId(deviceId);
+    if (existing) {
+      const presented = options.presentedToken?.trim();
+      if (!presented || !existing.token_hash || sha256Hex(presented) !== existing.token_hash) {
+        throw new HttpError(
+          409,
+          'DEVICE_EXISTS',
+          'This device_id is already registered; present its current token to rotate it, or register a new device_id'
+        );
+      }
+    }
 
+    // Rotation invalidates the previously issued token: the doc is overwritten
+    // with the new token_hash, so the old hash stops matching.
     const device: DeviceEntity = {
       device_id: deviceId,
       token_hash: tokenHash,
-      public_key: input.public_key ?? existing?.public_key,
+      public_key: existing?.public_key ?? input.public_key,
       device_name: input.device_name ?? existing?.device_name,
       platform: input.platform ?? existing?.platform,
       fcm_token: input.fcm_token ?? existing?.fcm_token,

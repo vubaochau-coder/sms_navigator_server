@@ -8,7 +8,8 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "lint": "eslint src tests",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "report:stale-devices": "tsx src/scripts/report-stale-devices.ts"
   },
   "keywords": [
     "otp",

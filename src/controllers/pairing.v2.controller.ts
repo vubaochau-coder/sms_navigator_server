@@ -1,59 +1,37 @@
 import { Request, Response } from 'express';
 import { pairingV2Service } from '../services/pairing.v2.service.js';
 import { channelService } from '../services/channel.service.js';
-import { deviceService } from '../services/device.service.js';
 import { fcmService } from '../services/fcm.service.js';
 import { PackageInput } from '../types/v2.js';
-import { HttpError } from '../utils/http-error.js';
 
 export class PairingV2Controller {
   /** POST /api/v2/pairing/requests — T1 member claims the QR invite (§5.1). */
   public static async claimRequest(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { code, session_id, pairing_token, device_name } = req.body as {
-      code?: string;
-      session_id?: string;
-      pairing_token?: string;
-      device_name: string;
-    };
+    const { code, device_name } = req.body as { code: string; device_name: string };
 
-    let claimed;
-    if (code) {
-      claimed = await pairingV2Service.claimByCode(device.device_id, device.public_key ?? '', code, device_name);
-    } else if (session_id && pairing_token) {
-      // v4 transition path — removed at roadmap phase 6
-      claimed = await pairingV2Service.claimSession(
-        device.device_id,
-        device.public_key ?? '',
-        session_id,
-        pairing_token,
-        device_name
-      );
-    } else {
-      throw new HttpError(400, 'VALIDATION_ERROR', 'Provide either code or session_id + pairing_token');
-    }
+    const claimed = await pairingV2Service.claimByCode(device.device_id, device.public_key ?? '', code, device_name);
 
     // Wake-up bell to the owner (best-effort, never in the consistency path — N8)
     try {
       const channel = await channelService.findChannelById(claimed.channel_id);
       if (channel) {
-        const owner = await deviceService.findByDeviceId(channel.owner_device_id);
-        if (owner?.fcm_token) {
-          await fcmService.sendDataNotification(
-            owner.fcm_token,
-            {
-              type: 'CHANNEL_EVENT',
-              channel_id: claimed.channel_id,
-              channel_name: channel.name,
-              kind: 'JOIN_REQUEST',
-              requester_device_name: device_name
-            },
-            {
-              title: 'Yêu cầu tham gia kênh',
-              body: `${device_name} muốn tham gia kênh "${channel.name}".`
-            }
-          );
-        }
+        await fcmService.bellDevices(
+          'JOIN_REQUEST',
+          claimed.channel_id,
+          [channel.owner_device_id],
+          {
+            type: 'CHANNEL_EVENT',
+            channel_id: claimed.channel_id,
+            channel_name: channel.name,
+            kind: 'JOIN_REQUEST',
+            requester_device_name: device_name
+          },
+          {
+            title: 'Yêu cầu tham gia kênh',
+            body: `${device_name} muốn tham gia kênh "${channel.name}".`
+          }
+        );
       }
     } catch {
       // ignore FCM failures
@@ -89,28 +67,23 @@ export class PairingV2Controller {
 
     // Bell: APPROVED to the requester (best-effort, N8). Skipped on an
     // idempotent retry — the bell already went out with the original commit.
-    try {
-      const requester = result.replayed
-        ? null
-        : await deviceService.findByDeviceId(result.requester_device_id);
-      if (requester?.fcm_token) {
-        await fcmService.sendDataNotification(
-          requester.fcm_token,
-          {
-            type: 'CHANNEL_EVENT',
-            channel_id: result.channel_id,
-            channel_name: result.channel_name,
-            kind: 'APPROVED',
-            epoch: String(result.current_epoch)
-          },
-          {
-            title: 'Yêu cầu đã được duyệt',
-            body: `Bạn đã được thêm vào kênh "${result.channel_name}". Mở app để xem tin nhắn SMS.`
-          }
-        );
-      }
-    } catch {
-      // ignore FCM failures
+    if (!result.replayed) {
+      await fcmService.bellDevices(
+        'APPROVED',
+        result.channel_id,
+        [result.requester_device_id],
+        {
+          type: 'CHANNEL_EVENT',
+          channel_id: result.channel_id,
+          channel_name: result.channel_name,
+          kind: 'APPROVED',
+          epoch: String(result.current_epoch)
+        },
+        {
+          title: 'Yêu cầu đã được duyệt',
+          body: `Bạn đã được thêm vào kênh "${result.channel_name}". Mở app để xem tin nhắn SMS.`
+        }
+      );
     }
 
     res.status(200).json({

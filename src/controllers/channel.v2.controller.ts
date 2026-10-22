@@ -26,7 +26,10 @@ export class ChannelV2Controller {
     });
   }
 
-  /** GET /api/v2/channels — ACTIVE memberships of the caller, grouped by role client-side (§4.2). */
+  /**
+   * GET /api/v2/channels — ACTIVE memberships of the caller, grouped by role client-side (§4.2).
+   * Carries the opaque whitelist blob so clients can label channels without N detail calls.
+   */
   public static async listChannels(req: Request, res: Response): Promise<void> {
     const device = req.device!;
     const channels = await channelService.listChannelsForDevice(device);
@@ -42,7 +45,9 @@ export class ChannelV2Controller {
         membership_version: channel.membership_version,
         member_count: channel.member_count,
         my_joined_epoch: channel.my_joined_epoch,
-        owner_device_name: channel.owner_device_name
+        owner_device_name: channel.owner_device_name,
+        whitelist: channel.whitelist,
+        rotation_pending: channel.rotation_pending
       }))
     });
   }
@@ -78,7 +83,24 @@ export class ChannelV2Controller {
       owner_device_name: ownerDevice?.device_name ?? '',
       // Member cần pk_owner để derive KEK khi unwrap envelope (SRD 7.2)
       owner_public_key: ownerDevice?.public_key ?? '',
-      whitelist: channel!.whitelist ?? null
+      whitelist: channel!.whitelist ?? null,
+      // A member left without a rotation — Owner app re-keys via POST /channels/rotate (§4.10)
+      rotation_pending: channel!.rotation_pending === true
+    });
+  }
+
+  /** PUT /api/v2/channels/name (§4.8): Owner renames the channel (display-only). */
+  public static async rename(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id, name } = req.body as { channel_id: string; name: string };
+
+    const channel = await channelService.renameChannel(channel_id, device.device_id, name);
+
+    res.status(200).json({
+      success: true,
+      channel_id: channel.channel_id,
+      name: channel.name,
+      updated_at: channel.updated_at
     });
   }
 
@@ -131,6 +153,17 @@ export class ChannelV2Controller {
     });
   }
 
+  /** GET /api/v2/key-envelopes[?channel_id=] — all envelopes of the caller (§6.1b). */
+  public static async listKeyEnvelopes(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const channelIdRaw = req.query.channel_id;
+    const channelId = typeof channelIdRaw === 'string' && channelIdRaw.length > 0 ? channelIdRaw : undefined;
+
+    const channels = await channelService.listKeyEnvelopesForDevice(device.device_id, channelId);
+
+    res.status(200).json({ success: true, channels });
+  }
+
   /** POST /api/v2/channels/revoke — T4 revoke + auto-rotate (Owner package, §4.6). */
   public static async revoke(req: Request, res: Response): Promise<void> {
     const device = req.device!;
@@ -144,30 +177,24 @@ export class ChannelV2Controller {
 
     // FCM bell to every revoked device (best-effort, N8). Skipped on an
     // idempotent retry — the bell already went out with the original commit.
-    await Promise.all(
-      (result.replayed ? [] : result.revoked).map(async (revokedId) => {
-        const target = await deviceService.findByDeviceId(revokedId);
-        if (!target?.fcm_token) return;
-        try {
-          await fcmService.sendDataNotification(
-            target.fcm_token,
-            {
-              type: 'CHANNEL_EVENT',
-              channel_id,
-              channel_name: result.channel_name,
-              kind: 'REVOKED',
-              epoch: String(result.current_epoch)
-            },
-            {
-              title: 'Quyền truy cập đã bị thu hồi',
-              body: `Bạn không còn quyền truy cập kênh "${result.channel_name}".`
-            }
-          );
-        } catch {
-          // ignore
+    if (!result.replayed) {
+      await fcmService.bellDevices(
+        'REVOKED',
+        channel_id,
+        result.revoked,
+        {
+          type: 'CHANNEL_EVENT',
+          channel_id,
+          channel_name: result.channel_name,
+          kind: 'REVOKED',
+          epoch: String(result.current_epoch)
+        },
+        {
+          title: 'Quyền truy cập đã bị thu hồi',
+          body: `Bạn không còn quyền truy cập kênh "${result.channel_name}".`
         }
-      })
-    );
+      );
+    }
 
     res.status(200).json({
       success: true,
@@ -175,6 +202,80 @@ export class ChannelV2Controller {
       membership_version: result.membership_version,
       replayed: result.replayed
     });
+  }
+
+  /** POST /api/v2/channels/leave (§4.9): a member leaves; Owner gets a bell and must rotate. */
+  public static async leave(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id } = req.body as { channel_id: string };
+
+    const result = await channelService.leaveChannel(channel_id, device.device_id);
+
+    const memberName = device.device_name ?? '';
+    await fcmService.bellDevices(
+      'MEMBER_LEFT',
+      channel_id,
+      [result.owner_device_id],
+      {
+        type: 'CHANNEL_EVENT',
+        channel_id,
+        channel_name: result.channel_name,
+        kind: 'MEMBER_LEFT',
+        device_name: memberName
+      },
+      {
+        title: 'Thành viên rời kênh',
+        body: `${memberName || 'Một thành viên'} đã rời kênh "${result.channel_name}".`
+      }
+    );
+
+    res.status(200).json({ success: true, membership_version: result.membership_version });
+  }
+
+  /** POST /api/v2/channels/rotate (§4.10): Owner re-keys after a member left. */
+  public static async rotate(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id, package: pkg } = req.body as { channel_id: string; package: PackageInput };
+
+    const result = await channelService.rotateChannel(device.device_id, channel_id, pkg);
+
+    res.status(200).json({
+      success: true,
+      current_epoch: result.current_epoch,
+      membership_version: result.membership_version,
+      replayed: result.replayed
+    });
+  }
+
+  /**
+   * POST /api/v2/channels/archive (§4.11): Owner dissolves the channel. Members
+   * get a `REVOKED`-kind bell — the kind every app build already handles by
+   * purging the channel keys — with `reason: ARCHIVED`.
+   */
+  public static async archive(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id } = req.body as { channel_id: string };
+
+    const result = await channelService.archiveChannel(device.device_id, channel_id);
+
+    await fcmService.bellDevices(
+      'ARCHIVED',
+      channel_id,
+      result.member_device_ids,
+      {
+        type: 'CHANNEL_EVENT',
+        channel_id,
+        channel_name: result.channel_name,
+        kind: 'REVOKED',
+        reason: 'ARCHIVED'
+      },
+      {
+        title: 'Kênh đã giải tán',
+        body: `Kênh "${result.channel_name}" đã được chủ kênh giải tán.`
+      }
+    );
+
+    res.status(200).json({ success: true, status: 'ARCHIVED', replayed: result.replayed });
   }
 
   /**
@@ -212,27 +313,7 @@ export class PairingChannelV2Controller {
       session_id: session.session_id,
       expires_at: session.expires_at,
       code: session.code,
-      qr_url: session.qr_url,
-      // v4 transition fields — removed at roadmap phase 6
-      pairing_token: session.pairing_token,
-      invite_url: session.invite_url
-    });
-  }
-
-  /** POST /api/v2/channels/sessions/resolve — Member previews channel before claiming (§4.6). */
-  public static async resolveSession(req: Request, res: Response): Promise<void> {
-    const device = req.device!;
-    const { session_id, pairing_token } = req.body as { session_id: string; pairing_token: string };
-
-    const result = await pairingV2Service.resolveSession(device.device_id, session_id, pairing_token);
-
-    res.status(200).json({
-      success: true,
-      session_id: result.session_id,
-      channel_id: result.channel_id,
-      channel_name: result.channel_name,
-      owner_device_name: result.owner_device_name,
-      expires_at: result.expires_at
+      qr_url: session.qr_url
     });
   }
 
@@ -241,12 +322,18 @@ export class PairingChannelV2Controller {
     const device = req.device!;
     const channelId = String(req.query.channel_id);
     const status = String(req.query.status ?? 'PENDING');
+    const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+    const before = req.query.before === undefined ? undefined : String(req.query.before);
 
-    const requests = await pairingV2Service.listChannelRequests(device.device_id, channelId, status);
+    const { requests, next_before } = await pairingV2Service.listChannelRequests(device.device_id, channelId, status, {
+      limit,
+      before
+    });
 
     res.status(200).json({
       success: true,
-      requests
+      requests,
+      next_before
     });
   }
 }

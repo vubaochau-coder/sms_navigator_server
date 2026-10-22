@@ -65,6 +65,7 @@
 | 409 | `REQUEST_NOT_PENDING` | Approve/reject khi request không còn PENDING | Refresh danh sách |
 | 409 | `MEMBERSHIP_CHANGED` | Package stale (epoch/version lệch) | Owner: sync → tạo lại package → retry 1 chạm |
 | 409 | `CHANNEL_NOT_ACTIVE` | Kênh ARCHIVED | Chặn gửi |
+| 409 | `DEVICE_EXISTS` | `POST /devices/register` với `device_id` đã có mà không kèm token hiện tại của thiết bị | Không thử lại: khôi phục từ bản sao lưu hoặc đăng ký `device_id` mới |
 | 409 | `EPOCH_OUTDATED` | Gửi message với `request_epoch != current_epoch` | Fetch self-envelope mới → unwrap → retry |
 | 409 | `REPLAY_DETECTED` | Trùng hash `(channel_id\|nonce\|ciphertext)` trong 24h | Không retry, báo lỗi |
 | 410 | `QR_EXPIRED` | Claim session hết hạn | Xin mã mới |
@@ -87,10 +88,16 @@ payload sai cấu trúc — hai mã không bao giờ chồng nhau.)*
 { "success": true, "device_token": "<raw, chỉ hiện 1 lần>", "device_id": "..." }
 ```
 
-- Idempotent theo `device_id`: gọi lại với cùng device_id → trả token mới,
-  update `public_key`/`device_name` (reinstall policy SRD 8.2).
-- Lưu `public_key` **một lần theo device_id mới** — luôn hợp lệ vì reinstall
-  sinh device_id mới (SRD 3.1).
+- `device_id` **mới** → tạo thiết bị, trả token.
+- `device_id` **đã tồn tại** → chỉ chấp nhận khi kèm `Authorization: Bearer
+  <token hiện tại của chính thiết bị đó>`: cấp token mới (token cũ hết hiệu
+  lực), cập nhật `device_name`/`platform`/`fcm_token`, **không bao giờ đổi
+  `public_key`**. Thiếu hoặc sai token → `409 DEVICE_EXISTS`.
+  Lý do: `device_id` không bí mật (member nào cũng thấy qua
+  `GET /channels/members`, `sender_device_id`) — đăng ký lại không cần bằng
+  chứng sẽ cho phép chiếm thiết bị và thay public key (FLOW_AUDIT S1).
+- Cài lại không có bản sao lưu = `device_id` mới + danh tính mới (SRD 8.2);
+  có bản sao lưu → khôi phục `device_id` + token cũ, không gọi endpoint này.
 
 ### 3.2. `PUT /api/v2/devices/fcm-token` 🔒
 
@@ -168,8 +175,17 @@ xuất hiện ở đây (đã có mã `403 REVOKED` khi đụng API kênh).
 { "success": true, "channels": [ { "channel_id": "...", "name": "...",
   "role": "OWNER" | "MEMBER", "status": "ACTIVE", "current_epoch": 3,
   "membership_version": 4, "member_count": 2, "my_joined_epoch": 2,
-  "owner_device_name": "..." } ] }
+  "owner_device_name": "...",
+  "whitelist": null | { "key_epoch": 3, "ciphertext": "...", "nonce": "...",
+                        "whitelist_version": 2, "updated_at": "..." },
+  "rotation_pending": false } ] }
 ```
+
+`whitelist` là blob E2EE y hệt trong `GET /channels/detail` (server không đọc) —
+client giải mã bằng channel key để hiện các pill white-list trên danh sách kênh.
+`rotation_pending` (Owner): có member tự rời mà chưa xoay khoá. Hai field này đủ
+để đồng bộ relay của Owner **không** phải gọi `GET /channels/detail` cho từng
+kênh mỗi lần (FLOW_AUDIT P2).
 
 ### 4.3. `GET /api/v2/channels/detail?channel_id={id}` 🔒
 
@@ -192,39 +208,24 @@ Owner: thấy tất cả (kèm REVOKED). Member: chỉ ACTIVE.
 // Request (body)
 { "channel_id": "..." }
 // Response 201
-{ "success": true, "session_id": "...", "pairing_token": "<raw 128-bit>",
-  "expires_at": "ISO", "invite_url": "smsnavigator://pair?v=4&s=...&t=...&u=...&e=..." }
+{ "success": true, "session_id": "...", "expires_at": "ISO",
+  "code": "<22 ký tự base64url>", "qr_url": "https://<host>/qr/<code>" }
 ```
 
-Server sinh cả `invite_url` — A chỉ nhét chuỗi này vào QR, B parse đúng một
-format (hết cảnh lệch parser hai phía). **Invite URL format v4:**
-
-```text
-smsnavigator://pair?v=4&s=<sessionId>&t=<pairingToken>&u=<base64url(serverBaseUrl)>&e=<expiryEpochMs>
-```
+QR chỉ chứa `qr_url` (Universal Opaque QR v3.3): `code` 128-bit ngẫu nhiên là
+bí mật duy nhất, server chỉ lưu `sha256(code)` trong `qr_codes`. Preview qua
+`GET /api/v2/qr/resolve?code=`, claim qua §5.1 với `code`.
+Định dạng v4 (`smsnavigator://pair?v=4…`, `pairing_token`, `invite_url`) và
+`POST /channels/sessions/resolve` **đã gỡ** ở roadmap GĐ6.
 
 Không chứa key/public key/credential dài hạn (I3). TTL 10 phút, single-use (I9/I11).
 Mỗi lần gọi `POST /api/v2/channels/sessions` sẽ tự động vô hiệu hóa (`status: EXPIRED`) toàn bộ session `UNUSED` trước đó của kênh trong cùng transaction, đảm bảo mỗi kênh duy trì tối đa 1 active invite tại một thời điểm (B-invalidate-on-create).
 
-### 4.6. `POST /api/v2/channels/sessions/resolve` — preview kênh từ QR 🔒 (Member)
+### 4.6. ~~`POST /api/v2/channels/sessions/resolve`~~ — đã gỡ (GĐ6)
 
-API read-only để client hiển thị trước thông tin kênh (Tên kênh, Chủ kênh) cho người dùng xác nhận tham gia. Không làm biến đổi trạng thái session (vẫn giữ `UNUSED`) và không ghi bất kỳ document nào vào Firestore.
-Được bảo vệ bởi `v2ResolveRateLimiter` (30 req / 5 phút / `device_id`).
-
-```jsonc
-// Request (body)
-{ "session_id": "...", "pairing_token": "<raw>" }
-// Response 200
-{ "success": true, "session_id": "...", "channel_id": "...",
-  "channel_name": "...", "owner_device_name": "...", "expires_at": "ISO" }
-```
-
-Fail-early: trả về lỗi sớm nếu:
-- `404 NOT_FOUND`: session không tồn tại hoặc token không khớp.
-- `409 QR_ALREADY_USED`: session đã bị claim.
-- `410 QR_EXPIRED`: session đã hết hạn hoặc không còn UNUSED.
-- `409 ALREADY_MEMBER`: caller đã là thành viên ACTIVE của kênh.
-- `409 REQUEST_ALREADY_PENDING`: caller đang có yêu cầu PENDING chờ duyệt trên kênh này.
+Thay bằng `GET /api/v2/qr/resolve?code=` (cùng các lỗi fail-early: `404`,
+`409 QR_ALREADY_USED`, `410 QR_EXPIRED`, `409 ALREADY_MEMBER`,
+`409 REQUEST_ALREADY_PENDING`). Route cũ trả `404`.
 
 ### 4.7. `POST /api/v2/channels/revoke` — T4 (Owner package) 🔒
 
@@ -237,13 +238,75 @@ Fail-early: trả về lỗi sớm nếu:
 { "success": true, "current_epoch": 4, "membership_version": 5 }
 ```
 
+### 4.8. `PUT /api/v2/channels/name` — đổi tên kênh 🔒 (Owner)
+
+```jsonc
+// Request (body) — name: trim, 1–100 ký tự (cùng giới hạn tạo kênh)
+{ "channel_id": "...", "name": "Kênh VCB" }
+// Response 200
+{ "success": true, "channel_id": "...", "name": "Kênh VCB", "updated_at": "ISO" }
+```
+
+Chỉ là metadata hiển thị: **không** đổi `current_epoch` / `membership_version`,
+không rotate key, không bắn FCM (member thấy tên mới ở lần tải danh sách / chi
+tiết kế tiếp). Lỗi: `403 NOT_OWNER`, `404 NOT_FOUND`, `409 CHANNEL_NOT_ACTIVE`,
+`400 VALIDATION_ERROR`. Rate limit dùng chung `v2NameRateLimiter`.
+
+### 4.9. `POST /api/v2/channels/leave` — thành viên rời kênh 🔒 (Member)
+
+```jsonc
+// Request (body)
+{ "channel_id": "..." }
+// Response 200
+{ "success": true, "membership_version": 6 }
+```
+
+Membership → `REVOKED` (+`left_at`) ngay lập tức: mọi API đọc của kênh trả
+`403 REVOKED` (KL12). Server **không** rotate (không giữ key) nên `current_epoch`
+giữ nguyên — Owner vẫn relay bình thường — nhưng `membership_version + 1`,
+`member_count − 1` và kênh được gắn `rotation_pending: true` (trả trong §4.3).
+Bell `kind: MEMBER_LEFT` (có notification block) tới Owner. Lỗi: `400
+OWNER_CANNOT_LEAVE` (Owner dùng §4.11), `403 REVOKED` (đã rời), `404`,
+`409 CHANNEL_NOT_ACTIVE`. Rời rồi vẫn được mời lại (T1/T2 như mới).
+
+### 4.10. `POST /api/v2/channels/rotate` — Owner đổi key, không đổi membership 🔒
+
+```jsonc
+// Request (body) — envelope set = {Owner} ∪ ACTIVE, key_epoch = N+1
+{ "channel_id": "...", "package": { "base_epoch": 3, "base_membership_version": 6, "envelopes": [ ... ] } }
+// Response 200
+{ "success": true, "current_epoch": 4, "membership_version": 7, "replayed": false }
+```
+
+Dùng sau §4.9 (app Owner thấy `rotation_pending` → tự gọi). Cùng Package
+Pattern (§8: `409 MEMBERSHIP_CHANGED`, `422 PACKAGE_INCOMPLETE`) và retry
+idempotent (`last_rotation.kind = ROTATE`) như T4. Mọi rotation (approve /
+revoke / rotate) đều xoá `rotation_pending`.
+
+### 4.11. `POST /api/v2/channels/archive` — giải tán kênh 🔒 (Owner)
+
+```jsonc
+// Request (body)
+{ "channel_id": "..." }
+// Response 200
+{ "success": true, "status": "ARCHIVED", "replayed": false }
+```
+
+Terminal `ACTIVE → ARCHIVED` (+`archived_at`). Cùng transaction: session
+`UNUSED` → `EXPIRED`, request `PENDING` → `CANCELLED` (giải phóng marker dedup).
+Sau đó kênh biến khỏi `GET /channels`, tin nhắn không còn được trả (§6.3, §6.4),
+mọi ghi (`messages`, `sessions`, claim, `name`, `leave`, `revoke`, `rotate`) →
+`409 CHANNEL_NOT_ACTIVE`. Bell tới member ACTIVE dùng `kind: REVOKED` +
+`reason: ARCHIVED` (app mọi bản đều xử lý REVOKED = purge key). Gọi lại trên
+kênh đã giải tán → `replayed: true`.
+
 ## 5. Pairing (claim → duyệt)
 
 ### 5.1. `POST /api/v2/pairing/requests` — T1 (Member claim) 🔒
 
 ```jsonc
 // Request (body)
-{ "session_id": "...", "pairing_token": "<raw>", "device_name": "Galaxy S23" }
+{ "code": "<22 ký tự base64url>", "device_name": "Galaxy S23" }
 // Response 201
 { "success": true, "request_id": "...", "status": "PENDING",
   "channel_id": "...", "channel_name": "...", "owner_device_name": "..." }
@@ -275,9 +338,20 @@ Không cần tham số — suy từ `req.device`.
   "created_at": "...", "decided_at": "..." } ] }
 ```
 
-### 5.3. `GET /api/v2/channels/requests?channel_id={id}&status=PENDING` 🔒 (Owner)
+### 5.3. `GET /api/v2/channels/requests?channel_id={id}&status=PENDING|APPROVED|REJECTED|CANCELLED|HISTORY&limit=&before=` 🔒 (Owner)
 
-Hàng đợi duyệt (Q1): `{ requests: [{request_id, requester_device_name, created_at}] }`.
+- `status=PENDING` (mặc định): hàng đợi duyệt (Q1), mới tạo trước.
+- `status=HISTORY`: mọi request đã xử lý (`APPROVED` / `REJECTED` / `CANCELLED`),
+  sắp theo `decided_at` mới nhất trước.
+- `limit` 1–100 (mặc định 50); trang sau gửi `before = next_before` của trang trước.
+
+```jsonc
+{ "success": true,
+  "requests": [ { "request_id": "...", "requester_device_id": "...", "requester_device_name": "...",
+                  "requester_public_key": "...", "status": "REJECTED",
+                  "created_at": "ISO", "decided_at": "ISO" } ],
+  "next_before": "ISO" | null }
+```
 
 ### 5.4. `POST /api/v2/pairing/requests/approve` — T2 (Owner package) 🔒
 
@@ -321,6 +395,29 @@ Lỗi: `409 MEMBERSHIP_CHANGED`, `422 PACKAGE_INCOMPLETE`, `409 REQUEST_NOT_PEND
 - `403 REVOKED` nếu caller đã bị revoke — không trả envelope nào, kể cả epoch
   cũ đã từng được provision (KL12: authorization kết thúc tại revocation).
 - `404` nếu chưa được provision epoch đó (KL8).
+
+### 6.1b. `GET /api/v2/key-envelopes[?channel_id={id}]` 🔒
+
+Mọi envelope của **máy gọi**, gom theo kênh, trong **một** request — để client
+giữ key của **mọi** epoch được cấp (SRD §8.4) mà không phải gọi
+`detail + key-envelope` cho từng kênh / từng epoch.
+
+```jsonc
+// Response 200
+{ "success": true,
+  "channels": [
+    { "channel_id": "...", "current_epoch": 5,
+      "owner_public_key": "<b64 X25519>",          // để unwrap (ECDH với Owner)
+      "envelopes": [ { "key_epoch": 3, "wrapped_key": "...", "nonce": "...", "kek_alg": "..." },
+                     { "key_epoch": 4, ... }, { "key_epoch": 5, ... } ] } ] }
+```
+
+- Chỉ kênh caller đang **ACTIVE** (KL12) — kênh bị revoke không xuất hiện.
+- Chỉ epoch `>= joined_epoch` của membership hiện tại; chỉ envelope đã cấp cho
+  chính máy này (không vượt KL8). Sắp xếp `key_epoch` tăng dần.
+- `?channel_id=` → chỉ kênh đó; caller chưa từng là member → `404`, đã bị
+  revoke → `403 REVOKED`.
+- Client bỏ qua epoch đã có key; giữ `GET /channels/key-envelope` cho app cũ.
 
 ### 6.2. `POST /api/v2/channels/messages` — T5 + T3 🔒 (Owner)
 

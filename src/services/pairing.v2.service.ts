@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import {
   ChannelEntity,
   ChannelMemberEntity,
@@ -8,11 +8,9 @@ import {
   PackageInput
 } from '../types/v2.js';
 import { getFirestoreDb } from '../config/firebase.js';
-import { env } from '../config/env.js';
 import { nowIso } from '../utils/time.js';
 import { HttpError } from '../utils/http-error.js';
 import { assertNotProduction } from '../utils/test-only.js';
-import { sha256Hex } from './device.service.js';
 import { validatePackage } from './channel.service.js';
 import { channelMembershipService } from './channel-membership.service.js';
 import { generateQrCode, qrCodeService, qrUrlFor } from './qr-code.service.js';
@@ -30,6 +28,10 @@ import {
 // Re-exported for existing importers.
 export { PAIRING_SESSIONS_COLLECTION, PAIRING_REQUESTS_COLLECTION, PAIRING_PENDING_COLLECTION, pairingPendingDocId };
 
+/** Processed (terminal) request statuses served by `status=HISTORY`. */
+const HISTORY_STATUSES = ['APPROVED', 'REJECTED', 'CANCELLED'] as const;
+const DEFAULT_REQUESTS_PAGE = 50;
+
 /** N5/I9: QR invite is single-use with a 10-minute TTL. */
 export const SESSION_TTL_MS = 10 * 60 * 1000;
 
@@ -40,10 +42,6 @@ export interface SessionCreateResult {
   code: string;
   /** Canonical HTTPS invite link rendered into the QR. */
   qr_url: string;
-  /** @deprecated v4 transition — removed at roadmap phase 6. */
-  pairing_token: string;
-  /** @deprecated v4 `smsnavigator://pair?v=4…` — removed at roadmap phase 6. */
-  invite_url: string;
 }
 
 export interface SessionResolveResult {
@@ -89,16 +87,12 @@ function requestFromDocument(data: Record<string, unknown> | undefined): Pairing
   };
 }
 
-/** base64url without padding for the deeplink `u=` parameter (API spec §4.5). */
-function base64UrlEncode(value: string): string {
-  return Buffer.from(value, 'utf8').toString('base64url');
-}
-
 export class PairingV2Service {
   /**
    * POST /channels/sessions (API spec §4.5): Owner creates a single-use QR
-   * invite session. The server returns the raw 128-bit pairing token (shown
-   * once) plus a fully-formed invite_url v4 so both sides share one parser.
+   * invite session. The opaque `code` (stored only as sha256 in `qr_codes`)
+   * is the sole bearer secret; the v4 pairing token was removed at roadmap
+   * phase 6.
    */
   public async createSession(ownerId: string, channelId: string): Promise<SessionCreateResult> {
     const db = getFirestoreDb();
@@ -106,7 +100,6 @@ export class PairingV2Service {
 
     const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
     const sessionId = randomUUID();
-    const pairingToken = randomBytes(16).toString('hex'); // 128-bit raw token
     const code = generateQrCode();
     const now = nowIso();
     const expiresAtMs = Date.now() + SESSION_TTL_MS;
@@ -120,6 +113,9 @@ export class PairingV2Service {
       }
       if (String(channel.data()?.owner_device_id ?? '') !== ownerId) {
         throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can create invite sessions');
+      }
+      if (channel.data()?.status === 'ARCHIVED') {
+        throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
       }
 
       const existingUnusedSnapshot = await tx.get(
@@ -137,7 +133,6 @@ export class PairingV2Service {
       tx.set(db.collection(PAIRING_SESSIONS_COLLECTION).doc(sessionId), {
         session_id: sessionId,
         channel_id: channelId,
-        pairing_token_hash: sha256Hex(pairingToken),
         status: 'UNUSED',
         expires_at: expiresAt,
         created_at: now
@@ -153,35 +148,12 @@ export class PairingV2Service {
       });
     });
 
-    const inviteUrl =
-      `smsnavigator://pair?v=4&s=${sessionId}` +
-      `&t=${pairingToken}` +
-      `&u=${base64UrlEncode(env.SERVER_BASE_URL)}` +
-      `&e=${expiresAtMs}`;
-
     return {
       session_id: sessionId,
       expires_at: expiresAt,
       code,
-      qr_url: qrUrlFor(code),
-      pairing_token: pairingToken,
-      invite_url: inviteUrl
+      qr_url: qrUrlFor(code)
     };
-  }
-
-  /**
-   * POST /channels/sessions/resolve (API spec §4.6): Member previews channel
-   * details before submitting a claim. Strictly read-only: Firestore is never
-   * mutated and session remains UNUSED.
-   * Performs early dedup checks (409 ALREADY_MEMBER, 409 REQUEST_ALREADY_PENDING)
-   * so client fails early before user interaction.
-   */
-  public async resolveSession(
-    requesterDeviceId: string,
-    sessionId: string,
-    pairingToken: string
-  ): Promise<SessionResolveResult> {
-    return this.previewSession(requesterDeviceId, sessionId, sha256Hex(pairingToken));
   }
 
   /**
@@ -191,15 +163,11 @@ export class PairingV2Service {
    */
   public async previewByCode(requesterDeviceId: string, code: string): Promise<SessionResolveResult> {
     const pointer = await qrCodeService.findActive(code);
-    return this.previewSession(requesterDeviceId, pointer.target_id, null);
+    return this.previewSession(requesterDeviceId, pointer.target_id);
   }
 
-  /** Shared preview checks. `tokenHash === null` → caller already proved possession via a QR code. */
-  private async previewSession(
-    requesterDeviceId: string,
-    sessionId: string,
-    tokenHash: string | null
-  ): Promise<SessionResolveResult> {
+  /** Read-only preview checks; possession was proved by the QR code. */
+  private async previewSession(requesterDeviceId: string, sessionId: string): Promise<SessionResolveResult> {
     const db = getFirestoreDb();
     if (!db) throw new Error('Firestore is not available');
 
@@ -209,9 +177,6 @@ export class PairingV2Service {
       throw new HttpError(404, 'NOT_FOUND', 'Pairing session does not exist');
     }
     const session = sessionDoc.data() as Partial<PairingSessionEntity>;
-    if (tokenHash !== null && String(session.pairing_token_hash ?? '') !== tokenHash) {
-      throw new HttpError(404, 'NOT_FOUND', 'Pairing token does not match this session');
-    }
     if (session.status === 'CLAIMED') {
       throw new HttpError(409, 'QR_ALREADY_USED', 'This invite code has already been used');
     }
@@ -274,17 +239,6 @@ export class PairingV2Service {
    * this channel — enforced via the deterministic `pairing_pending` marker,
    * so concurrent claims with different sessions cannot both commit).
    */
-  public async claimSession(
-    requesterDeviceId: string,
-    requesterPublicKey: string,
-    sessionId: string,
-    pairingToken: string,
-    deviceName: string
-  ): Promise<ClaimResult> {
-    return this.claim(requesterDeviceId, requesterPublicKey, sessionId, sha256Hex(pairingToken), deviceName);
-  }
-
-  /** T1 via opaque QR code (roadmap v3.3 §2.3.C): `POST /pairing/requests { code }`. */
   public async claimByCode(
     requesterDeviceId: string,
     requesterPublicKey: string,
@@ -292,15 +246,14 @@ export class PairingV2Service {
     deviceName: string
   ): Promise<ClaimResult> {
     const pointer = await qrCodeService.findActive(code);
-    return this.claim(requesterDeviceId, requesterPublicKey, pointer.target_id, null, deviceName);
+    return this.claim(requesterDeviceId, requesterPublicKey, pointer.target_id, deviceName);
   }
 
-  /** Shared T1 transaction. `tokenHash === null` → possession proved via a QR code. */
+  /** T1 transaction on the session the QR code points to. */
   private async claim(
     requesterDeviceId: string,
     requesterPublicKey: string,
     sessionId: string,
-    tokenHash: string | null,
     deviceName: string
   ): Promise<ClaimResult> {
     const db = getFirestoreDb();
@@ -315,9 +268,6 @@ export class PairingV2Service {
         throw new HttpError(404, 'NOT_FOUND', 'Pairing session does not exist');
       }
       const session = sessionDoc.data() as Partial<PairingSessionEntity>;
-      if (tokenHash !== null && String(session.pairing_token_hash ?? '') !== tokenHash) {
-        throw new HttpError(404, 'NOT_FOUND', 'Pairing token does not match this session');
-      }
       if (session.status === 'CLAIMED') {
         throw new HttpError(409, 'QR_ALREADY_USED', 'This invite code has already been used');
       }
@@ -443,14 +393,20 @@ export class PairingV2Service {
     }));
   }
 
-  /** GET /channels/requests (API spec §5.3): Owner approval queue (Q1). */
+  /**
+   * GET /channels/requests (API spec §5.3): Owner approval queue (Q1), or the
+   * processed history (`status=HISTORY`, BACKLOG 2.3). Sorted newest first by
+   * decision time (history) / creation time (a single status), capped at
+   * `limit` (default 50) with a `next_before` cursor.
+   */
   public async listChannelRequests(
     ownerId: string,
     channelId: string,
-    status: string
-  ): Promise<Array<Record<string, unknown>>> {
+    status: string,
+    page: { limit?: number; before?: string } = {}
+  ): Promise<{ requests: Array<Record<string, unknown>>; next_before: string | null }> {
     const db = getFirestoreDb();
-    if (!db) return [];
+    if (!db) return { requests: [], next_before: null };
 
     const channel = await db.collection(CHANNELS_COLLECTION).doc(channelId).get();
     if (!channel.exists) {
@@ -460,24 +416,36 @@ export class PairingV2Service {
       throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can view the approval queue');
     }
 
+    const history = status === 'HISTORY';
     const snapshot = await db
       .collection(PAIRING_REQUESTS_COLLECTION)
       .where('channel_id', '==', channelId)
-      .where('status', '==', status)
+      .where('status', history ? 'in' : '==', history ? [...HISTORY_STATUSES] : status)
       .get();
 
-    return snapshot.docs
+    const limit = page.limit ?? DEFAULT_REQUESTS_PAGE;
+    const sortKey = (request: PairingRequestEntity): string =>
+      history ? request.decided_at ?? request.terminal_at ?? request.created_at : request.created_at;
+    const sorted = snapshot.docs
       .map((doc) => requestFromDocument(doc.data()))
       .filter((request): request is PairingRequestEntity => request !== null)
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .map((request) => ({
+      .filter((request) => !page.before || sortKey(request) < page.before)
+      .sort((a, b) => sortKey(b).localeCompare(sortKey(a)));
+    const pageItems = sorted.slice(0, limit);
+
+    return {
+      requests: pageItems.map((request) => ({
         request_id: request.request_id,
         requester_device_id: request.requester_device_id,
         requester_device_name: request.requester_device_name,
         // Owner cần pk của requester để wrap envelope epoch mới (SRD 7.2)
         requester_public_key: request.requester_public_key,
-        created_at: request.created_at
-      }));
+        status: request.status,
+        created_at: request.created_at,
+        ...(request.decided_at ? { decided_at: request.decided_at } : {})
+      })),
+      next_before: sorted.length > limit ? sortKey(pageItems[pageItems.length - 1]) : null
+    };
   }
 
   /**

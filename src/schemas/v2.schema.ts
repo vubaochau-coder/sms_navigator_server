@@ -74,6 +74,12 @@ export const channelCreateSchema = z.object({
   package: packageSchema
 });
 
+/** PUT /channels/name — Owner renames the channel (display-only, same limits as create). */
+export const channelRenameSchema = z.object({
+  channel_id: z.string().min(1, 'channel_id is required'),
+  name: z.string().trim().min(1, 'name cannot be empty').max(100)
+});
+
 export const channelIdQuerySchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required')
 });
@@ -82,23 +88,9 @@ export const channelSessionCreateSchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required')
 });
 
-/** POST /channels/sessions/resolve — read-only session preview */
-export const channelSessionResolveSchema = z.object({
-  session_id: z.string().uuid(),
-  pairing_token: z.string().min(1)
-});
-
-/**
- * POST /pairing/requests — T1 claim (API spec §5.1).
- * Either `code` (opaque QR, roadmap v3.3) or the v4 pair
- * `session_id` + `pairing_token` (removed at roadmap phase 6). The
- * either/or rule is enforced in the controller (validateBody needs a plain
- * ZodObject).
- */
+/** POST /pairing/requests — T1 claim by opaque QR code (API spec §5.1, roadmap v3.3). */
 export const pairingRequestClaimSchema = z.object({
-  code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string').optional(),
-  session_id: z.string().min(1).optional(),
-  pairing_token: z.string().min(1).optional(),
+  code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string'),
   device_name: z.string().trim().min(1).max(128)
 });
 
@@ -107,9 +99,16 @@ export const qrResolveQuerySchema = z.object({
   code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string')
 });
 
+/**
+ * GET /channels/requests (§5.3). `status=HISTORY` = every processed request
+ * (APPROVED / REJECTED / CANCELLED), newest decision first, paged with
+ * `limit` + `before` (the `next_before` cursor of the previous page).
+ */
 export const channelRequestsQuerySchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required'),
-  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']).optional().default('PENDING')
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'HISTORY']).optional().default('PENDING'),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  before: z.string().datetime().optional()
 });
 
 /** POST /pairing/requests/approve — T2 Owner package with rotate (§5.4). */
@@ -127,6 +126,11 @@ export const pairingRequestIdSchema = z.object({
 export const keyEnvelopeQuerySchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required'),
   epoch: z.coerce.number().int().positive().optional()
+});
+
+/** GET /key-envelopes — every envelope of the caller, optionally one channel (§6.1b). */
+export const keyEnvelopesQuerySchema = z.object({
+  channel_id: z.string().min(1).optional()
 });
 
 /** POST /channels/messages — T5 + T3 (§6.2). */
@@ -153,6 +157,17 @@ export const messageFetchOneQuerySchema = z.object({
 export const channelRevokeSchema = z.object({
   channel_id: z.string().min(1),
   revoke_device_ids: z.array(z.string().min(1)).min(1, 'revoke_device_ids must contain at least 1 device'),
+  package: packageSchema
+});
+
+/** POST /channels/leave + /channels/archive — body is just the channel (§4.9, §4.11). */
+export const channelIdBodySchema = z.object({
+  channel_id: z.string().min(1, 'channel_id is required')
+});
+
+/** POST /channels/rotate — Owner re-key without membership change (§4.10). */
+export const channelRotateSchema = z.object({
+  channel_id: z.string().min(1),
   package: packageSchema
 });
 
