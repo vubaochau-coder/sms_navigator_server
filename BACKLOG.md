@@ -39,6 +39,7 @@
 | # | Hạng mục | Chi tiết |
 |---|---|---|
 | 3.1 | Log đếm bell cho JOIN_REQUEST / APPROVED / REVOKED | `NEW_MESSAGE` đã có log `members/sent/failed/no_token`; các bell còn lại gửi 1 thiết bị, vẫn chỉ `warn` khi lỗi. |
+| 3.2 | CI cho pull request | Repo chỉ có `keep-alive.yml`. Thêm workflow `pull_request`: `npm ci`, `npx tsc --noEmit`, `npm run lint`, `npm test` (Jest chạy offline bằng Firestore mock). Đặc biệt quan trọng vì `main` tự deploy lên Render. |
 
 ---
 
