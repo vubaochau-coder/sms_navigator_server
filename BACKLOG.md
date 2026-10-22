@@ -11,7 +11,6 @@
 
 | # | Hạng mục | Ghi chú | Ưu tiên |
 |---|---|---|---|
-| 0.1 | Điền `ANDROID_CERT_SHA256` trên Render (debug + release + Play App Signing, ngăn cách bằng dấu phẩy) — lấy bằng `scripts/print_android_sha256.sh` của repo mobile | Thiếu → `/.well-known/assetlinks.json` trả `[]`, link `https://…/qr/<code>` không tự mở app | P0 |
 | 0.2 | Merge `feat/otp-notification` vào `main` **sau khi** app mới đã cài trên các máy Android | `main` tự deploy lên Render. BE mới gửi `NEW_MESSAGE` data-only cho Android → app cũ không hiện thông báo khi chạy nền | P0 |
 | 0.3 | Roadmap GĐ6 — clean-cut v4: gỡ `pairing_token`, `invite_url`, `POST /channels/sessions/resolve`, claim bằng token | Chỉ làm **sau** khi mobile bật force update (`min_version`) | P1 |
 
@@ -45,6 +44,7 @@
 
 ## 4. Hạng mục đã hoàn thành (tham khảo — đừng làm lại)
 
+- **22/10/2026**: `ANDROID_CERT_SHA256` đã đặt trên Render (SHA release + debug máy build); `assetlinks.json` production đúng, máy test báo App Links `verified` (cũ: mục 0.1). Đổi keystore/máy build → chạy lại `scripts/print_android_sha256.sh` của repo mobile và cập nhật biến.
 - **22/10/2026**: tự xoá FCM token chết (cũ: bước 1 mục 1); log đếm bell `NEW_MESSAGE` (một phần mục 3.1).
 - **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
 - **Nhánh `feat/otp-notification`** (chưa merge, xem 0.2): `NEW_MESSAGE` data-only cho Android kèm `sequence_number` + `sender_device_id`; `GET /api/v2/channels/message` (§6.4).
