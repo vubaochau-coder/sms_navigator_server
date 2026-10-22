@@ -1515,6 +1515,22 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
 
       fcmSpy.mockRestore();
     });
+
+    it('skips NEW_MESSAGE bells for members whose stored fcm_token is an empty string', async () => {
+      const owner = await reg('Owner Alice');
+      const member = await reg('Member Bob');
+      const { channelId } = await createChannel(owner, 'Kênh Token Rỗng');
+      await joinChannel(owner, channelId, member); // epoch 2
+      // Bypasses the API schema (min 1): simulates a legacy/corrupt record
+      await deviceService.updateFcmToken(member.deviceId, '');
+
+      const fcmSpy = jest.spyOn(fcmService, 'sendDataNotification');
+      const msgRes = await sendMessage(owner, channelId, 2, 'fresh-otp');
+      expect(msgRes.status).toBe(201);
+
+      expect(fcmSpy.mock.calls.map((call) => call[0])).not.toContain('');
+      fcmSpy.mockRestore();
+    });
   });
 
   describe('GET /api/v2/channels/message?channel_id=&sequence_number= (§6.4)', () => {

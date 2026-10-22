@@ -167,16 +167,21 @@ export class MessageV2Service {
 
       // One batched round of device reads instead of one per member
       const devices = await Promise.all(members.map((member) => deviceService.findByDeviceId(member.device_id)));
-      await Promise.all(
-        devices
-          .filter((device): device is NonNullable<typeof device> => Boolean(device?.fcm_token))
-          .map((device) =>
-            fcmService.sendDataNotification(
-              device.fcm_token!,
-              data,
-              device.platform === 'android' ? undefined : notification
-            )
+      // Truthy check: an empty-string token would otherwise pass and fail silently
+      const reachable = devices.filter((device): device is NonNullable<typeof device> => Boolean(device?.fcm_token));
+      const messageIds = await Promise.all(
+        reachable.map((device) =>
+          fcmService.sendDataNotification(
+            device.fcm_token!,
+            data,
+            device.platform === 'android' ? undefined : notification
           )
+        )
+      );
+      const sent = messageIds.filter(Boolean).length;
+      logger.info(
+        `[MessageV2] NEW_MESSAGE bells for channel ${channelId}: members=${members.length} ` +
+          `sent=${sent} failed=${messageIds.length - sent} no_token=${members.length - reachable.length}`
       );
     } catch (error) {
       // Best-effort: FCM is a wake-up signal, never part of the consistency path (N8)

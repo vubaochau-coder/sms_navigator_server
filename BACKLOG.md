@@ -11,18 +11,16 @@
 
 | # | Hạng mục | Ghi chú | Ưu tiên |
 |---|---|---|---|
-| 0.1 | Điền `ANDROID_CERT_SHA256` trên Render (debug + release + Play App Signing, ngăn cách bằng dấu phẩy) | Thiếu → `/.well-known/assetlinks.json` trả `[]`, link `https://…/qr/<code>` không tự mở app | P0 |
+| 0.1 | Điền `ANDROID_CERT_SHA256` trên Render (debug + release + Play App Signing, ngăn cách bằng dấu phẩy) — lấy bằng `scripts/print_android_sha256.sh` của repo mobile | Thiếu → `/.well-known/assetlinks.json` trả `[]`, link `https://…/qr/<code>` không tự mở app | P0 |
 | 0.2 | Merge `feat/otp-notification` vào `main` **sau khi** app mới đã cài trên các máy Android | `main` tự deploy lên Render. BE mới gửi `NEW_MESSAGE` data-only cho Android → app cũ không hiện thông báo khi chạy nền | P0 |
 | 0.3 | Roadmap GĐ6 — clean-cut v4: gỡ `pairing_token`, `invite_url`, `POST /channels/sessions/resolve`, claim bằng token | Chỉ làm **sau** khi mobile bật force update (`min_version`) | P1 |
 
 ---
 
-## 1. Vòng đời thiết bị sau uninstall — chưa có dọn dẹp
+## 1. Vòng đời thiết bị sau uninstall — job dọn định kỳ (tuỳ chọn)
 
-- **Vấn đề**: app bị xoá → server không biết; device record, channel membership, key envelopes, FCM token tồn tại vĩnh viễn trong Firestore. FCM bell gửi thất bại (`messaging/registration-token-not-registered`) hiện chỉ bị nuốt: `fcm.service.ts` `sendDataNotification` catch → `logger.warn` → return `''`.
-- **Hướng xử lý**:
-  1. Trong `sendDataNotification`, khi gặp `messaging/invalid-registration-token` / `messaging/registration-token-not-registered`: xoá `fcm_token` của device (hoặc flag `unregistered_at`) để các bell sau bỏ qua.
-  2. (Tuỳ chọn) Job dọn định kỳ: device không `last_seen_at` quá N ngày + token unregistered → review membership/envelope cleanup (chỉ dọn token, không tự revoke membership — quyết định nghiệp vụ).
+- Token chết đã tự xoá khi FCM báo `registration-token-not-registered` / `invalid-registration-token` (`FcmService` → `deviceService.clearFcmToken`, so-khớp-rồi-xoá trong transaction: token mới upload sau đó được giữ).
+- Còn lại: job dọn định kỳ device không `last_seen_at` quá N ngày + không còn token → review membership/envelope cleanup (chỉ dọn token, không tự revoke membership — quyết định nghiệp vụ).
 - Lưu ý từ backup/khôi phục (mobile 1.1): máy khôi phục dùng lại `device_id` + `device_token` cũ và gửi FCM token mới — **không** được coi đó là thiết bị mới.
 
 ---
@@ -41,12 +39,13 @@
 
 | # | Hạng mục | Chi tiết |
 |---|---|---|
-| 3.1 | Log đếm bell | Các điểm bắn bell fail im lặng (chỉ warn rời rạc). Log có cấu trúc: số bell gửi thành công / số device thiếu token / số lỗi — để debug "không thấy FCM" nhanh hơn. |
+| 3.1 | Log đếm bell cho JOIN_REQUEST / APPROVED / REVOKED | `NEW_MESSAGE` đã có log `members/sent/failed/no_token`; các bell còn lại gửi 1 thiết bị, vẫn chỉ `warn` khi lỗi. |
 
 ---
 
 ## 4. Hạng mục đã hoàn thành (tham khảo — đừng làm lại)
 
+- **22/10/2026**: tự xoá FCM token chết (cũ: bước 1 mục 1); log đếm bell `NEW_MESSAGE` (một phần mục 3.1).
 - **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
 - **Nhánh `feat/otp-notification`** (chưa merge, xem 0.2): `NEW_MESSAGE` data-only cho Android kèm `sequence_number` + `sender_device_id`; `GET /api/v2/channels/message` (§6.4).
 - **21/10/2026** (đã lên `main`):
