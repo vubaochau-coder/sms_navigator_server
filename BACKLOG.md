@@ -39,12 +39,13 @@
 | # | Hạng mục | Chi tiết |
 |---|---|---|
 | 3.1 | Log đếm bell cho JOIN_REQUEST / APPROVED / REVOKED | `NEW_MESSAGE` đã có log `members/sent/failed/no_token`; các bell còn lại gửi 1 thiết bị, vẫn chỉ `warn` khi lỗi. |
-| 3.2 | CI cho pull request | Repo chỉ có `keep-alive.yml`. Thêm workflow `pull_request`: `npm ci`, `npx tsc --noEmit`, `npm run lint`, `npm test` (Jest chạy offline bằng Firestore mock). Đặc biệt quan trọng vì `main` tự deploy lên Render. |
 
 ---
 
 ## 4. Hạng mục đã hoàn thành (tham khảo — đừng làm lại)
 
+- **Nhánh `feat/backlog-sweep`** (xem `REVIEW_BACKLOG.md` để kiểm thử):
+  - CI pull request `.github/workflows/ci.yml` (tsc, lint, Jest, build) — cũ: mục 3.2.
 - **22/10/2026**: `ANDROID_CERT_SHA256` đã đặt trên Render (SHA release + debug máy build); `assetlinks.json` production đúng, máy test báo App Links `verified` (cũ: mục 0.1). Đổi keystore/máy build → chạy lại `scripts/print_android_sha256.sh` của repo mobile và cập nhật biến.
 - **22/10/2026**: tự xoá FCM token chết (cũ: bước 1 mục 1); log đếm bell `NEW_MESSAGE` (một phần mục 3.1).
 - **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
