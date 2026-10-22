@@ -17,3 +17,20 @@
 - [ ] Mở PR của nhánh này → job xanh.
 - [ ] (Khuyên) bảo vệ `main`, bắt buộc check `Typecheck, lint & test` — vì merge = deploy.
 
+## P1-2 · Clean-cut v4 — gỡ `pairing_token`, `invite_url`, `/channels/sessions/resolve`, claim bằng token (BACKLOG 0.3)
+
+⚠️ **Thứ tự deploy**: chỉ merge/deploy SAU KHI Remote Config `app_update_min_build` ≥ **20** (1.1.0) và mọi máy đã lên 1.1.0. App 1.0.x cũ quét QR v4 sẽ bị lỗi.
+
+**Rà soát**
+- [ ] `POST /channels/sessions` chỉ trả `session_id, expires_at, code, qr_url`; không còn sinh/lưu `pairing_token_hash`.
+- [ ] `POST /pairing/requests` bắt buộc `code` (schema) — body v4 `{session_id, pairing_token}` → `400`.
+- [ ] Route `POST /channels/sessions/resolve` đã xoá (→ `404`); preview chỉ còn `GET /qr/resolve`.
+- [ ] Session v4 còn sót trong Firestore (TTL 10') không còn đường claim nào — chấp nhận, hết hạn tự nhiên.
+- [ ] App 1.1.0 parse response mới an toàn: `PairingSessionModel` đọc `pairing_token`/`invite_url` với default `''`, QR dùng `qr_url` (đã kiểm tra trong code).
+- [ ] `SERVER_API_SPEC.md` §4.5/4.6/5.1 và `SRD_DATABASE.md` §3.4, OQ-4 đã cập nhật.
+
+**Kiểm thử**
+- [ ] Jest: `qr.test.ts` — "v4 is gone" (token claim 400, resolve 404); `api-v2.test.ts` claim bằng `code`.
+- [ ] Trên máy 1.1.0: Owner tạo QR → Member quét/bấm link → duyệt → nhận tin (end-to-end).
+- [ ] Gọi tay `POST /api/v2/channels/sessions/resolve` → 404.
+

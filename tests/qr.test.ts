@@ -93,7 +93,7 @@ describe('Universal Opaque QR (roadmap v3.3)', () => {
 
     expect(session.code).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(session.qr_url).toMatch(new RegExp(`/qr/${session.code}$`));
-    expect(session.qr_url).not.toContain(session.pairing_token);
+    expect(session).not.toHaveProperty('pairing_token');
   });
 
   it('stores only sha256(code) — never the raw code', async () => {
@@ -241,19 +241,27 @@ describe('Universal Opaque QR (roadmap v3.3)', () => {
     expect(res.body.error).toBe('REQUEST_ALREADY_PENDING');
   });
 
-  it('claim with neither code nor session_id+pairing_token → 400', async () => {
+  it('claim without a code → 400', async () => {
     const member = await reg('Member');
     const res = await claim(member, {});
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('VALIDATION_ERROR');
   });
 
-  it('v4 claim (session_id + pairing_token) still works during the transition', async () => {
+  it('v4 is gone (roadmap phase 6): token claim → 400, /channels/sessions/resolve → 404', async () => {
     const owner = await reg('Owner');
     const member = await reg('Member');
-    const { session_id, pairing_token } = await createSession(owner, await createChannel(owner));
-    const res = await claim(member, { session_id, pairing_token });
-    expect(res.status).toBe(201);
+    const session = await createSession(owner, await createChannel(owner));
+    expect(session).not.toHaveProperty('pairing_token');
+
+    const res = await claim(member, { session_id: session.session_id, pairing_token: 'a'.repeat(32) });
+    expect(res.status).toBe(400);
+
+    const resolve = await request(server)
+      .post('/api/v2/channels/sessions/resolve')
+      .set(bearer(member.token))
+      .send({ session_id: session.session_id, pairing_token: 'a'.repeat(32) });
+    expect(resolve.status).toBe(404);
   });
 
   // ---------------------------------------------------------- public routes

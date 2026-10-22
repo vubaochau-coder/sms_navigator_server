@@ -64,7 +64,8 @@ export interface ChannelMemberEntity {
 export interface PairingSessionEntity {
   session_id: string;
   channel_id: string;
-  pairing_token_hash: string; // SHA-256 of the raw 128-bit pairing token
+  /** Legacy v4 sessions only (removed at roadmap phase 6); never written now. */
+  pairing_token_hash?: string;
   status: SessionStatus;
   claimed_by_device_id?: string;
   request_id?: string;

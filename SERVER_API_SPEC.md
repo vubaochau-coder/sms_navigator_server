@@ -192,39 +192,24 @@ Owner: thấy tất cả (kèm REVOKED). Member: chỉ ACTIVE.
 // Request (body)
 { "channel_id": "..." }
 // Response 201
-{ "success": true, "session_id": "...", "pairing_token": "<raw 128-bit>",
-  "expires_at": "ISO", "invite_url": "smsnavigator://pair?v=4&s=...&t=...&u=...&e=..." }
+{ "success": true, "session_id": "...", "expires_at": "ISO",
+  "code": "<22 ký tự base64url>", "qr_url": "https://<host>/qr/<code>" }
 ```
 
-Server sinh cả `invite_url` — A chỉ nhét chuỗi này vào QR, B parse đúng một
-format (hết cảnh lệch parser hai phía). **Invite URL format v4:**
-
-```text
-smsnavigator://pair?v=4&s=<sessionId>&t=<pairingToken>&u=<base64url(serverBaseUrl)>&e=<expiryEpochMs>
-```
+QR chỉ chứa `qr_url` (Universal Opaque QR v3.3): `code` 128-bit ngẫu nhiên là
+bí mật duy nhất, server chỉ lưu `sha256(code)` trong `qr_codes`. Preview qua
+`GET /api/v2/qr/resolve?code=`, claim qua §5.1 với `code`.
+Định dạng v4 (`smsnavigator://pair?v=4…`, `pairing_token`, `invite_url`) và
+`POST /channels/sessions/resolve` **đã gỡ** ở roadmap GĐ6.
 
 Không chứa key/public key/credential dài hạn (I3). TTL 10 phút, single-use (I9/I11).
 Mỗi lần gọi `POST /api/v2/channels/sessions` sẽ tự động vô hiệu hóa (`status: EXPIRED`) toàn bộ session `UNUSED` trước đó của kênh trong cùng transaction, đảm bảo mỗi kênh duy trì tối đa 1 active invite tại một thời điểm (B-invalidate-on-create).
 
-### 4.6. `POST /api/v2/channels/sessions/resolve` — preview kênh từ QR 🔒 (Member)
+### 4.6. ~~`POST /api/v2/channels/sessions/resolve`~~ — đã gỡ (GĐ6)
 
-API read-only để client hiển thị trước thông tin kênh (Tên kênh, Chủ kênh) cho người dùng xác nhận tham gia. Không làm biến đổi trạng thái session (vẫn giữ `UNUSED`) và không ghi bất kỳ document nào vào Firestore.
-Được bảo vệ bởi `v2ResolveRateLimiter` (30 req / 5 phút / `device_id`).
-
-```jsonc
-// Request (body)
-{ "session_id": "...", "pairing_token": "<raw>" }
-// Response 200
-{ "success": true, "session_id": "...", "channel_id": "...",
-  "channel_name": "...", "owner_device_name": "...", "expires_at": "ISO" }
-```
-
-Fail-early: trả về lỗi sớm nếu:
-- `404 NOT_FOUND`: session không tồn tại hoặc token không khớp.
-- `409 QR_ALREADY_USED`: session đã bị claim.
-- `410 QR_EXPIRED`: session đã hết hạn hoặc không còn UNUSED.
-- `409 ALREADY_MEMBER`: caller đã là thành viên ACTIVE của kênh.
-- `409 REQUEST_ALREADY_PENDING`: caller đang có yêu cầu PENDING chờ duyệt trên kênh này.
+Thay bằng `GET /api/v2/qr/resolve?code=` (cùng các lỗi fail-early: `404`,
+`409 QR_ALREADY_USED`, `410 QR_EXPIRED`, `409 ALREADY_MEMBER`,
+`409 REQUEST_ALREADY_PENDING`). Route cũ trả `404`.
 
 ### 4.7. `POST /api/v2/channels/revoke` — T4 (Owner package) 🔒
 
@@ -243,7 +228,7 @@ Fail-early: trả về lỗi sớm nếu:
 
 ```jsonc
 // Request (body)
-{ "session_id": "...", "pairing_token": "<raw>", "device_name": "Galaxy S23" }
+{ "code": "<22 ký tự base64url>", "device_name": "Galaxy S23" }
 // Response 201
 { "success": true, "request_id": "...", "status": "PENDING",
   "channel_id": "...", "channel_name": "...", "owner_device_name": "..." }

@@ -4,34 +4,14 @@ import { channelService } from '../services/channel.service.js';
 import { deviceService } from '../services/device.service.js';
 import { fcmService } from '../services/fcm.service.js';
 import { PackageInput } from '../types/v2.js';
-import { HttpError } from '../utils/http-error.js';
 
 export class PairingV2Controller {
   /** POST /api/v2/pairing/requests — T1 member claims the QR invite (§5.1). */
   public static async claimRequest(req: Request, res: Response): Promise<void> {
     const device = req.device!;
-    const { code, session_id, pairing_token, device_name } = req.body as {
-      code?: string;
-      session_id?: string;
-      pairing_token?: string;
-      device_name: string;
-    };
+    const { code, device_name } = req.body as { code: string; device_name: string };
 
-    let claimed;
-    if (code) {
-      claimed = await pairingV2Service.claimByCode(device.device_id, device.public_key ?? '', code, device_name);
-    } else if (session_id && pairing_token) {
-      // v4 transition path — removed at roadmap phase 6
-      claimed = await pairingV2Service.claimSession(
-        device.device_id,
-        device.public_key ?? '',
-        session_id,
-        pairing_token,
-        device_name
-      );
-    } else {
-      throw new HttpError(400, 'VALIDATION_ERROR', 'Provide either code or session_id + pairing_token');
-    }
+    const claimed = await pairingV2Service.claimByCode(device.device_id, device.public_key ?? '', code, device_name);
 
     // Wake-up bell to the owner (best-effort, never in the consistency path — N8)
     try {

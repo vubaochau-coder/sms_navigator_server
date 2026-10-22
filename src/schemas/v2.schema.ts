@@ -82,23 +82,9 @@ export const channelSessionCreateSchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required')
 });
 
-/** POST /channels/sessions/resolve — read-only session preview */
-export const channelSessionResolveSchema = z.object({
-  session_id: z.string().uuid(),
-  pairing_token: z.string().min(1)
-});
-
-/**
- * POST /pairing/requests — T1 claim (API spec §5.1).
- * Either `code` (opaque QR, roadmap v3.3) or the v4 pair
- * `session_id` + `pairing_token` (removed at roadmap phase 6). The
- * either/or rule is enforced in the controller (validateBody needs a plain
- * ZodObject).
- */
+/** POST /pairing/requests — T1 claim by opaque QR code (API spec §5.1, roadmap v3.3). */
 export const pairingRequestClaimSchema = z.object({
-  code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string').optional(),
-  session_id: z.string().min(1).optional(),
-  pairing_token: z.string().min(1).optional(),
+  code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string'),
   device_name: z.string().trim().min(1).max(128)
 });
 

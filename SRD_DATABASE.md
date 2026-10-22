@@ -174,15 +174,16 @@ Ràng buộc: revoke chỉ theo chiều `ACTIVE → REVOKED`, không quay lại.
 |---|---|---|---|
 | session_id | string | ✔ | Document id |
 | channel_id | string | ✔ | |
-| pairing_token_hash | string | ✔ | SHA-256 của **pairing_token 128-bit** random |
+| pairing_token_hash | string | ✖ | Chỉ còn ở session v4 cũ — không ghi nữa từ GĐ6 |
 | status | string | ✔ | `UNUSED` \| `CLAIMED` \| `EXPIRED` |
 | claimed_by_device_id | string | ✖ | Set trong cùng transaction CLAIMED |
 | request_id | string | ✖ | |
 | expires_at | ISO8601 | ✔ | 10 phút; TTL index |
 | created_at | ISO8601 | ✔ | |
 
-QR invite (deeplink) chứa: `session_id`, `pairing_token`, `server_url`,
-`expiry` — tái dùng cơ chế one-time token + hash + TTL của GĐ1.
+QR invite chứa `https://<host>/qr/<code>` — `code` 128-bit ngẫu nhiên, server
+chỉ lưu `sha256(code)` trong `qr_codes` (con trỏ tới session). Single-use + TTL
+10 phút như cũ. (Định dạng v4 `session_id` + `pairing_token` đã gỡ ở GĐ6.)
 **Không chứa Channel Key / private key / credential dài hạn.**
 
 State machine (transaction):
@@ -533,4 +534,4 @@ KL12. Membership ACTIVE at query time is the source of truth for READ
 | OQ-1 | Owner recovery khi A mất máy (identity key không khôi phục) | **MỞ (thu hẹp)**: crash recovery đã xử lý bằng self-envelope (7.3); mất hẳn thiết bị = mất kênh trong v1, tạo lại kênh. Backup identity key mã hóa passphrase để V2 quyết định |
 | OQ-2 | Rotate ngay khi revoke? | **ĐÃ ĐÓNG**: auto-rotate trong T4 (mục 8.3) |
 | OQ-3 | Message retention | **ĐÃ ĐÓNG**: TTL 30 ngày theo `server_received_at` (mục 8.4) |
-| OQ-4 | Định danh token trong QR | **ĐÃ ĐÓNG**: `session_id` + `pairing_token` 128-bit, server lưu SHA-256 hash, single-use + TTL 10' (3.4) |
+| OQ-4 | Định danh token trong QR | **ĐÃ ĐÓNG**: opaque `code` 128-bit, server lưu SHA-256 trong `qr_codes`, single-use + TTL 10' (3.4); `pairing_token` v4 đã gỡ ở GĐ6 |

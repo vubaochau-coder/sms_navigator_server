@@ -19,7 +19,6 @@ import {
   channelCreateSchema,
   channelIdQuerySchema,
   channelSessionCreateSchema,
-  channelSessionResolveSchema,
   pairingRequestClaimSchema,
   channelRequestsQuerySchema,
   pairingApproveSchema,
@@ -123,14 +122,6 @@ router.post(
   v2SessionRateLimiter,
   validateBody(channelSessionCreateSchema),
   asyncHandler(PairingChannelV2Controller.createSession)
-);
-
-router.post(
-  '/channels/sessions/resolve',
-  authenticate,
-  v2ResolveRateLimiter,
-  validateBody(channelSessionResolveSchema),
-  asyncHandler(PairingChannelV2Controller.resolveSession)
 );
 
 router.post(
