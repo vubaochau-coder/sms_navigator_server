@@ -9,7 +9,7 @@ import {
   envelopeDocId
 } from './collections.js';
 
-export type RotationKind = 'APPROVE' | 'REVOKE';
+export type RotationKind = 'APPROVE' | 'REVOKE' | 'ROTATE';
 
 /**
  * Receipt of the most recent epoch rotation, stored on the channel doc
@@ -66,7 +66,7 @@ export function packageFingerprint(pkg: PackageInput): string {
 function parseLastRotation(raw: unknown): LastRotation | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  if (typeof r.package_hash !== 'string' || (r.kind !== 'APPROVE' && r.kind !== 'REVOKE')) return null;
+  if (typeof r.package_hash !== 'string' || (r.kind !== 'APPROVE' && r.kind !== 'REVOKE' && r.kind !== 'ROTATE')) return null;
   return {
     kind: r.kind,
     package_hash: r.package_hash,
@@ -88,7 +88,8 @@ function sameIdSet(a: string[] = [], b: string[] = []): boolean {
 
 /**
  * Owns every write that changes a channel's epoch / membership_version /
- * envelopes. Pairing (T2 approve) and channel (T4 revoke) both commit their
+ * envelopes. Pairing (T2 approve), channel (T4 revoke) and the post-leave
+ * rotate all commit their
  * rotation through here, so the KL5 invariants live in exactly one place.
  */
 export class ChannelMembershipService {
@@ -144,7 +145,9 @@ export class ChannelMembershipService {
       membership_version: newVersion,
       member_count: input.memberCount,
       updated_at: input.now,
-      last_rotation: receipt
+      last_rotation: receipt,
+      // Every rotation re-keys {Owner} ∪ ACTIVE, which also settles a pending leave
+      rotation_pending: false
     });
 
     for (const envelope of input.pkg.envelopes) {

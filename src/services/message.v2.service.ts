@@ -199,6 +199,11 @@ export class MessageV2Service {
     if (!db) throw new Error('Firestore is not available');
 
     await channelService.requireActiveMember(channelId, deviceId);
+    const channel = await channelService.findChannelById(channelId);
+    if (channel?.status !== 'ACTIVE') {
+      // Archived (§4.11): history is no longer served
+      throw new HttpError(404, 'NOT_FOUND', 'This channel has been archived');
+    }
 
     const snapshot = await db
       .collection(CHANNEL_MESSAGES_COLLECTION)
@@ -211,10 +216,9 @@ export class MessageV2Service {
       throw new HttpError(404, 'NOT_FOUND', `Message #${sequenceNumber} does not exist in this channel`);
     }
 
-    const channel = await channelService.findChannelById(channelId);
     return {
       channel_id: entity.channel_id,
-      channel_name: channel?.name ?? '',
+      channel_name: channel.name,
       sequence_number: entity.sequence_number,
       key_epoch: entity.key_epoch,
       ciphertext: entity.ciphertext,
@@ -249,9 +253,16 @@ export class MessageV2Service {
       .where('device_id', '==', deviceId)
       .where('status', '==', 'ACTIVE')
       .get();
-    const channelIds = Array.from(
+    const memberChannelIds = Array.from(
       new Set(memberships.docs.map((doc) => String(doc.data()?.channel_id ?? '')).filter(Boolean))
     );
+    // Batched channel lookup (names + status): archived channels (§4.11) are skipped
+    const channelDocs = await Promise.all(memberChannelIds.map((id) => channelService.findChannelById(id)));
+    const channelNameById = new Map<string, string>();
+    for (const channel of channelDocs) {
+      if (channel && channel.status === 'ACTIVE') channelNameById.set(channel.channel_id, channel.name);
+    }
+    const channelIds = memberChannelIds.filter((id) => channelNameById.has(id));
     if (channelIds.length === 0) {
       return { date, messages: [], truncated: false };
     }
@@ -280,13 +291,6 @@ export class MessageV2Service {
 
     const truncated = entities.length > MESSAGES_DAY_CAP;
     const capped = truncated ? entities.slice(0, MESSAGES_DAY_CAP) : entities;
-
-    // Batched channel-name lookup (no per-channel sequential read)
-    const channelDocs = await Promise.all(channelIds.map((id) => channelService.findChannelById(id)));
-    const channelNameById = new Map<string, string>();
-    for (const channel of channelDocs) {
-      if (channel) channelNameById.set(channel.channel_id, channel.name);
-    }
 
     const messages: FetchedMessage[] = capped.map((entity) => ({
       channel_id: entity.channel_id,

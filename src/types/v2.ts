@@ -45,6 +45,9 @@ export interface ChannelEntity {
   created_at: string;
   updated_at: string;
   whitelist?: ChannelWhitelistBlob;
+  /** A member left without a rotation (POST /channels/leave): Owner must rotate (POST /channels/rotate). */
+  rotation_pending?: boolean;
+  archived_at?: string;
 }
 
 /** SRD 3.3 — channel_members/{channelId}__{deviceId}. */

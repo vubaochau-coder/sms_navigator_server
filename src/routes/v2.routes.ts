@@ -19,6 +19,8 @@ import {
   channelCreateSchema,
   channelIdQuerySchema,
   channelRenameSchema,
+  channelIdBodySchema,
+  channelRotateSchema,
   channelSessionCreateSchema,
   pairingRequestClaimSchema,
   channelRequestsQuerySchema,
@@ -157,6 +159,33 @@ router.post(
   v2ApproveRateLimiter,
   validateBody(channelRevokeSchema),
   asyncHandler(ChannelV2Controller.revoke)
+);
+
+// POST /api/v2/channels/leave — member leaves (Owner must rotate afterwards)
+router.post(
+  '/channels/leave',
+  authenticate,
+  v2ApproveRateLimiter,
+  validateBody(channelIdBodySchema),
+  asyncHandler(ChannelV2Controller.leave)
+);
+
+// POST /api/v2/channels/rotate — Owner re-key without membership change
+router.post(
+  '/channels/rotate',
+  authenticate,
+  v2ApproveRateLimiter,
+  validateBody(channelRotateSchema),
+  asyncHandler(ChannelV2Controller.rotate)
+);
+
+// POST /api/v2/channels/archive — Owner dissolves the channel (terminal)
+router.post(
+  '/channels/archive',
+  authenticate,
+  v2ApproveRateLimiter,
+  validateBody(channelIdBodySchema),
+  asyncHandler(ChannelV2Controller.archive)
 );
 
 router.put(

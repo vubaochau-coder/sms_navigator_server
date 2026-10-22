@@ -148,6 +148,17 @@ export const channelRevokeSchema = z.object({
   package: packageSchema
 });
 
+/** POST /channels/leave + /channels/archive — body is just the channel (§4.9, §4.11). */
+export const channelIdBodySchema = z.object({
+  channel_id: z.string().min(1, 'channel_id is required')
+});
+
+/** POST /channels/rotate — Owner re-key without membership change (§4.10). */
+export const channelRotateSchema = z.object({
+  channel_id: z.string().min(1),
+  package: packageSchema
+});
+
 /** PUT /channels/whitelist — ROADMAP_CHANNEL_WHITELIST.md v2.2. */
 export const channelWhitelistUpdateSchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required'),

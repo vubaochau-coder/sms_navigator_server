@@ -236,6 +236,54 @@ không rotate key, không bắn FCM (member thấy tên mới ở lần tải da
 tiết kế tiếp). Lỗi: `403 NOT_OWNER`, `404 NOT_FOUND`, `409 CHANNEL_NOT_ACTIVE`,
 `400 VALIDATION_ERROR`. Rate limit dùng chung `v2NameRateLimiter`.
 
+### 4.9. `POST /api/v2/channels/leave` — thành viên rời kênh 🔒 (Member)
+
+```jsonc
+// Request (body)
+{ "channel_id": "..." }
+// Response 200
+{ "success": true, "membership_version": 6 }
+```
+
+Membership → `REVOKED` (+`left_at`) ngay lập tức: mọi API đọc của kênh trả
+`403 REVOKED` (KL12). Server **không** rotate (không giữ key) nên `current_epoch`
+giữ nguyên — Owner vẫn relay bình thường — nhưng `membership_version + 1`,
+`member_count − 1` và kênh được gắn `rotation_pending: true` (trả trong §4.3).
+Bell `kind: MEMBER_LEFT` (có notification block) tới Owner. Lỗi: `400
+OWNER_CANNOT_LEAVE` (Owner dùng §4.11), `403 REVOKED` (đã rời), `404`,
+`409 CHANNEL_NOT_ACTIVE`. Rời rồi vẫn được mời lại (T1/T2 như mới).
+
+### 4.10. `POST /api/v2/channels/rotate` — Owner đổi key, không đổi membership 🔒
+
+```jsonc
+// Request (body) — envelope set = {Owner} ∪ ACTIVE, key_epoch = N+1
+{ "channel_id": "...", "package": { "base_epoch": 3, "base_membership_version": 6, "envelopes": [ ... ] } }
+// Response 200
+{ "success": true, "current_epoch": 4, "membership_version": 7, "replayed": false }
+```
+
+Dùng sau §4.9 (app Owner thấy `rotation_pending` → tự gọi). Cùng Package
+Pattern (§8: `409 MEMBERSHIP_CHANGED`, `422 PACKAGE_INCOMPLETE`) và retry
+idempotent (`last_rotation.kind = ROTATE`) như T4. Mọi rotation (approve /
+revoke / rotate) đều xoá `rotation_pending`.
+
+### 4.11. `POST /api/v2/channels/archive` — giải tán kênh 🔒 (Owner)
+
+```jsonc
+// Request (body)
+{ "channel_id": "..." }
+// Response 200
+{ "success": true, "status": "ARCHIVED", "replayed": false }
+```
+
+Terminal `ACTIVE → ARCHIVED` (+`archived_at`). Cùng transaction: session
+`UNUSED` → `EXPIRED`, request `PENDING` → `CANCELLED` (giải phóng marker dedup).
+Sau đó kênh biến khỏi `GET /channels`, tin nhắn không còn được trả (§6.3, §6.4),
+mọi ghi (`messages`, `sessions`, claim, `name`, `leave`, `revoke`, `rotate`) →
+`409 CHANNEL_NOT_ACTIVE`. Bell tới member ACTIVE dùng `kind: REVOKED` +
+`reason: ARCHIVED` (app mọi bản đều xử lý REVOKED = purge key). Gọi lại trên
+kênh đã giải tán → `replayed: true`.
+
 ## 5. Pairing (claim → duyệt)
 
 ### 5.1. `POST /api/v2/pairing/requests` — T1 (Member claim) 🔒

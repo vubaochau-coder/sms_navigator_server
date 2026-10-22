@@ -22,8 +22,11 @@ import {
   CHANNEL_MEMBERS_COLLECTION,
   CHANNEL_KEY_ENVELOPES_COLLECTION,
   PAIRING_REQUESTS_COLLECTION,
+  PAIRING_SESSIONS_COLLECTION,
+  PAIRING_PENDING_COLLECTION,
   channelMemberDocId,
-  envelopeDocId
+  envelopeDocId,
+  pairingPendingDocId
 } from './collections.js';
 
 // Re-exported for existing importers (tests, other services).
@@ -57,7 +60,9 @@ function channelFromDocument(id: string, data: Record<string, unknown> | undefin
     status: data.status === 'ARCHIVED' ? 'ARCHIVED' : 'ACTIVE',
     created_at: String(data.created_at ?? nowIso()),
     updated_at: String(data.updated_at ?? nowIso()),
-    whitelist
+    whitelist,
+    rotation_pending: data.rotation_pending === true,
+    archived_at: data.archived_at as string | undefined
   };
 }
 
@@ -627,6 +632,178 @@ export class ChannelService {
         channel_name: channel.name,
         replayed: false
       };
+    });
+  }
+
+  /**
+   * POST /channels/leave (API spec §4.9): an ACTIVE member leaves on their own.
+   * The membership becomes REVOKED at once (KL12: no more reads), but — unlike
+   * T4 — the server cannot rotate (it never holds keys), so the epoch stays and
+   * the channel is flagged `rotation_pending` for the Owner to re-key through
+   * POST /channels/rotate. The Owner keeps relaying on the current epoch
+   * meanwhile. Owner → 400 OWNER_CANNOT_LEAVE (archive instead).
+   */
+  public async leaveChannel(
+    channelId: string,
+    deviceId: string
+  ): Promise<{ channel_name: string; owner_device_id: string; membership_version: number }> {
+    const db = getFirestoreDb();
+    if (!db) throw new Error('Firestore is not available');
+
+    const now = nowIso();
+    const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
+    const memberRef = db.collection(CHANNEL_MEMBERS_COLLECTION).doc(channelMemberDocId(channelId, deviceId));
+
+    return db.runTransaction(async (tx) => {
+      const [channelDoc, memberDoc] = [await tx.get(channelRef), await tx.get(memberRef)];
+      if (!channelDoc.exists) {
+        throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
+      }
+      const channel = channelFromDocument(channelDoc.id, channelDoc.data());
+      if (!channel) throw new HttpError(500, 'SERVER_ERROR', 'Corrupted channel document');
+      if (channel.owner_device_id === deviceId) {
+        throw new HttpError(400, 'OWNER_CANNOT_LEAVE', 'The owner cannot leave; archive the channel instead');
+      }
+      if (channel.status !== 'ACTIVE') {
+        throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
+      }
+      const member = memberFromDocument(memberDoc.data());
+      if (!member) {
+        throw new HttpError(404, 'NOT_FOUND', 'You are not a member of this channel');
+      }
+      if (member.status !== 'ACTIVE') {
+        throw new HttpError(403, 'REVOKED', 'Your membership in this channel has already ended');
+      }
+
+      const membershipVersion = channel.membership_version + 1;
+      tx.update(memberRef, { status: 'REVOKED' as MemberStatus, revoked_at: now, left_at: now });
+      tx.update(channelRef, {
+        member_count: Math.max(1, channel.member_count - 1),
+        membership_version: membershipVersion,
+        rotation_pending: true,
+        updated_at: now
+      });
+      return { channel_name: channel.name, owner_device_id: channel.owner_device_id, membership_version: membershipVersion };
+    });
+  }
+
+  /**
+   * POST /channels/rotate (API spec §4.10): Owner re-keys {Owner} ∪ ACTIVE at
+   * epoch N+1 without changing membership — used after a member left
+   * (`rotation_pending`). Same Package Pattern checks and idempotent retry as T4.
+   */
+  public async rotateChannel(
+    ownerId: string,
+    channelId: string,
+    pkg: PackageInput
+  ): Promise<{ current_epoch: number; membership_version: number; replayed: boolean }> {
+    const db = getFirestoreDb();
+    if (!db) throw new Error('Firestore is not available');
+
+    const now = nowIso();
+
+    return db.runTransaction(async (tx) => {
+      const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
+      const channelDoc = await tx.get(channelRef);
+      if (!channelDoc.exists) {
+        throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
+      }
+      const channel = channelFromDocument(channelDoc.id, channelDoc.data());
+      if (!channel) throw new HttpError(500, 'SERVER_ERROR', 'Corrupted channel document');
+      if (channel.owner_device_id !== ownerId) {
+        throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can rotate the channel key');
+      }
+      if (channel.status !== 'ACTIVE') {
+        throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
+      }
+
+      const replay = channelMembershipService.findReplay(channelDoc.data(), pkg, { kind: 'ROTATE' });
+      if (replay) {
+        return { current_epoch: replay.new_epoch, membership_version: replay.new_membership_version, replayed: true };
+      }
+
+      const membersSnapshot = await tx.get(
+        db.collection(CHANNEL_MEMBERS_COLLECTION).where('channel_id', '==', channelId).where('status', '==', 'ACTIVE')
+      );
+      const active = membersSnapshot.docs
+        .map((doc) => memberFromDocument(doc.data()))
+        .filter((member): member is ChannelMemberEntity => member !== null)
+        .filter((member) => member.device_id !== channel.owner_device_id);
+
+      const newEpoch = channel.current_epoch + 1;
+      validatePackage(channel, pkg, [channel.owner_device_id, ...active.map((m) => m.device_id)], newEpoch);
+
+      const committed = channelMembershipService.commitRotation(tx, db, {
+        kind: 'ROTATE',
+        channelId,
+        base: { current_epoch: channel.current_epoch, membership_version: channel.membership_version },
+        pkg,
+        provisionDeviceIds: [channel.owner_device_id, ...active.map((m) => m.device_id)],
+        memberCount: active.length + 1,
+        now
+      });
+      return { ...committed, replayed: false };
+    });
+  }
+
+  /**
+   * POST /channels/archive (API spec §4.11): Owner dissolves the channel —
+   * terminal ACTIVE → ARCHIVED. In the same transaction: UNUSED invites expire
+   * and PENDING join requests are CANCELLED (dedup markers released). The
+   * channel then disappears from every list, accepts no message / invite /
+   * claim (409 CHANNEL_NOT_ACTIVE) and its messages are no longer served.
+   * Idempotent: archiving an archived channel returns `replayed: true`.
+   */
+  public async archiveChannel(
+    ownerId: string,
+    channelId: string
+  ): Promise<{ channel_name: string; member_device_ids: string[]; replayed: boolean }> {
+    const db = getFirestoreDb();
+    if (!db) throw new Error('Firestore is not available');
+
+    const now = nowIso();
+    const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
+
+    return db.runTransaction(async (tx) => {
+      const channelDoc = await tx.get(channelRef);
+      if (!channelDoc.exists) {
+        throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
+      }
+      const channel = channelFromDocument(channelDoc.id, channelDoc.data());
+      if (!channel) throw new HttpError(500, 'SERVER_ERROR', 'Corrupted channel document');
+      if (channel.owner_device_id !== ownerId) {
+        throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can archive the channel');
+      }
+      if (channel.status === 'ARCHIVED') {
+        return { channel_name: channel.name, member_device_ids: [], replayed: true };
+      }
+
+      const [members, sessions, requests] = [
+        await tx.get(
+          db.collection(CHANNEL_MEMBERS_COLLECTION).where('channel_id', '==', channelId).where('status', '==', 'ACTIVE')
+        ),
+        await tx.get(
+          db.collection(PAIRING_SESSIONS_COLLECTION).where('channel_id', '==', channelId).where('status', '==', 'UNUSED')
+        ),
+        await tx.get(
+          db.collection(PAIRING_REQUESTS_COLLECTION).where('channel_id', '==', channelId).where('status', '==', 'PENDING')
+        )
+      ];
+
+      tx.update(channelRef, { status: 'ARCHIVED', archived_at: now, updated_at: now });
+      for (const doc of sessions.docs) {
+        tx.update(doc.ref, { status: 'EXPIRED' });
+      }
+      for (const doc of requests.docs) {
+        tx.update(doc.ref, { status: 'CANCELLED', decided_by: ownerId, decided_at: now, terminal_at: now });
+        const requester = String(doc.data()?.requester_device_id ?? '');
+        tx.delete(db.collection(PAIRING_PENDING_COLLECTION).doc(pairingPendingDocId(channelId, requester)));
+      }
+
+      const memberDeviceIds = members.docs
+        .map((doc) => String(doc.data()?.device_id ?? ''))
+        .filter((id) => id && id !== channel.owner_device_id);
+      return { channel_name: channel.name, member_device_ids: memberDeviceIds, replayed: false };
     });
   }
 

@@ -110,6 +110,9 @@ export class PairingV2Service {
       if (String(channel.data()?.owner_device_id ?? '') !== ownerId) {
         throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can create invite sessions');
       }
+      if (channel.data()?.status === 'ARCHIVED') {
+        throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
+      }
 
       const existingUnusedSnapshot = await tx.get(
         db

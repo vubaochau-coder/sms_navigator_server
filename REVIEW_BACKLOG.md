@@ -46,3 +46,23 @@
 - [ ] Jest `channel-rename.test.ts`.
 - [ ] Gọi thật: đổi tên → `GET /channels` của member thấy tên mới; SMS relay tiếp theo trên máy Owner hiện tên mới trong log.
 
+## P2-2 · Vòng đời kênh: rời / đổi key / giải tán (BACKLOG 2.2)
+
+**Thiết kế — cần đồng ý trước khi merge** ⚠️
+- Backlog cũ đề xuất "leave = Owner tự rotate khi gặp 409 EPOCH_OUTDATED": **không khả thi** — nếu server tự tăng epoch, Owner không có envelope epoch mới → SMS bị park mãi. Thay bằng: leave chỉ REVOKED + `rotation_pending`, epoch giữ nguyên; Owner app tự gọi `POST /channels/rotate` (mới). Người rời bị chặn đọc ngay bởi KL12 (membership), rotate là lớp bảo vệ thứ hai.
+- Giải tán = **terminal** (không có un-archive); tin nhắn kênh đã giải tán không còn được trả cho ai (kể cả Owner). Dữ liệu vẫn nằm tới TTL 30 ngày.
+- Bell giải tán dùng `kind: REVOKED` để app cũ (1.1.0) cũng purge key; `reason: ARCHIVED` để app mới hiện đúng ngữ cảnh.
+
+**Rà soát**
+- [ ] `leaveChannel`, `rotateChannel`, `archiveChannel` trong `channel.service.ts` — đọc trước ghi trong transaction.
+- [ ] `commitRotation` luôn set `rotation_pending: false`; `RotationKind` thêm `ROTATE` (receipt/replay).
+- [ ] `createSession` trên kênh ARCHIVED → 409 (trước đây vẫn tạo được QR!).
+- [ ] `fetchMessagesByDate` / `fetchMessage` bỏ kênh ARCHIVED.
+- [ ] `GET /channels/detail` trả thêm `rotation_pending`.
+- [ ] Spec §4.9–4.11.
+
+**Kiểm thử**
+- [ ] Jest `channel-lifecycle.test.ts` (7 case).
+- [ ] E2E với app (mobile P2-2): member rời → Owner nhận bell → mở app → tự rotate (epoch +1) → SMS tiếp theo vẫn tới các member còn lại.
+- [ ] Owner giải tán → member (cả bản 1.1.0) nhận thông báo, kênh biến mất.
+

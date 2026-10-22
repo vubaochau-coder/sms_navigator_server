@@ -78,7 +78,9 @@ export class ChannelV2Controller {
       owner_device_name: ownerDevice?.device_name ?? '',
       // Member cần pk_owner để derive KEK khi unwrap envelope (SRD 7.2)
       owner_public_key: ownerDevice?.public_key ?? '',
-      whitelist: channel!.whitelist ?? null
+      whitelist: channel!.whitelist ?? null,
+      // A member left without a rotation — Owner app re-keys via POST /channels/rotate (§4.10)
+      rotation_pending: channel!.rotation_pending === true
     });
   }
 
@@ -190,6 +192,93 @@ export class ChannelV2Controller {
       membership_version: result.membership_version,
       replayed: result.replayed
     });
+  }
+
+  /** POST /api/v2/channels/leave (§4.9): a member leaves; Owner gets a bell and must rotate. */
+  public static async leave(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id } = req.body as { channel_id: string };
+
+    const result = await channelService.leaveChannel(channel_id, device.device_id);
+
+    try {
+      const owner = await deviceService.findByDeviceId(result.owner_device_id);
+      if (owner?.fcm_token) {
+        const memberName = device.device_name ?? '';
+        await fcmService.sendDataNotification(
+          owner.fcm_token,
+          {
+            type: 'CHANNEL_EVENT',
+            channel_id,
+            channel_name: result.channel_name,
+            kind: 'MEMBER_LEFT',
+            device_name: memberName
+          },
+          {
+            title: 'Thành viên rời kênh',
+            body: `${memberName || 'Một thành viên'} đã rời kênh "${result.channel_name}".`
+          }
+        );
+      }
+    } catch {
+      // best-effort bell (N8)
+    }
+
+    res.status(200).json({ success: true, membership_version: result.membership_version });
+  }
+
+  /** POST /api/v2/channels/rotate (§4.10): Owner re-keys after a member left. */
+  public static async rotate(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id, package: pkg } = req.body as { channel_id: string; package: PackageInput };
+
+    const result = await channelService.rotateChannel(device.device_id, channel_id, pkg);
+
+    res.status(200).json({
+      success: true,
+      current_epoch: result.current_epoch,
+      membership_version: result.membership_version,
+      replayed: result.replayed
+    });
+  }
+
+  /**
+   * POST /api/v2/channels/archive (§4.11): Owner dissolves the channel. Members
+   * get a `REVOKED`-kind bell — the kind every app build already handles by
+   * purging the channel keys — with `reason: ARCHIVED`.
+   */
+  public static async archive(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id } = req.body as { channel_id: string };
+
+    const result = await channelService.archiveChannel(device.device_id, channel_id);
+
+    await Promise.all(
+      result.member_device_ids.map(async (memberId) => {
+        const target = await deviceService.findByDeviceId(memberId);
+        if (!target?.fcm_token) return;
+        try {
+          await fcmService.sendDataNotification(
+            target.fcm_token,
+            {
+              type: 'CHANNEL_EVENT',
+              channel_id,
+              channel_name: result.channel_name,
+              kind: 'REVOKED',
+              reason: 'ARCHIVED'
+            },
+            {
+              title: 'Kênh đã giải tán',
+              body: `Kênh "${result.channel_name}" đã được chủ kênh giải tán.`
+            }
+          );
+        } catch {
+          // ignore
+        }
+      })
+    );
+
+    res.status(200).json({ success: true, status: 'ARCHIVED', replayed: result.replayed });
   }
 
   /**
