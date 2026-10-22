@@ -2,51 +2,58 @@
 
 > Tài liệu gom toàn bộ nợ kỹ thuật + roadmap chưa triển khai của phía server.
 > Mục đã hoàn thành bị loại khỏi danh sách; hoàn thành mục nào thì xoá mục đó.
-> Cập nhật lần cuối: 07/10/2026.
+> App chỉ hỗ trợ **Android** — không làm hạng mục iOS (AASA, APNs…).
+> Cập nhật lần cuối: 22/10/2026.
 
 ---
 
-## 1. QR opaque resolve endpoint (Bước 3 lộ trình Universal QR — phối hợp mobile)
+## 0. Triển khai / vận hành
 
-Mobile đang giữ hợp đồng thiết kế đầy đủ trong `../sms_navigator/BACKLOG.md` mục 1. Phần BE cần làm:
-
-- **Endpoint**: `GET /qr/v1/{key}` (yêu cầu device auth) → `{type, version, payload}`.
-  - Error semantics: `404` không tồn tại/đã xoá · `410` hết hạn · `409` đã consume · `403` không đủ quyền resolve type.
-- **Key store**: mỗi key quản lý `type, payload, created_at, expires_at, consumed_by, consumed_at, max_uses`.
-  - Hiện trạng thiếu: **consumed flag chuẩn + max_uses** (chỉ có 409 PAIR_ALREADY_CONFIRMED riêng cho pairing).
-- **Endpoint sinh key** khi tạo pairing session (thay cho việc mobile tự nhúng payload vào QR).
-- **Secret exchange sau resolve**: dọn shared secret khỏi QR — BE sinh session, secret trao đổi qua kênh đã xác thực sau khi resolve (server-mediated exchange). Mục tiêu: chụp màn hình QR không lộ secret.
-- **Authorization theo type**: type nhạy cảm giới hạn role.
-- **Versioning trong path**: `/qr/v1/...` cho phép `/v2/` song song sau này.
-- **Blocker hạ tầng**: domain verify App Links (phải chốt domain + host `assetlinks.json`).
+| # | Hạng mục | Ghi chú | Ưu tiên |
+|---|---|---|---|
+| 0.2 | Merge `feat/otp-notification` vào `main` **sau khi** app mới đã cài trên các máy Android | `main` tự deploy lên Render. BE mới gửi `NEW_MESSAGE` data-only cho Android → app cũ không hiện thông báo khi chạy nền | P0 |
+| 0.3 | Roadmap GĐ6 — clean-cut v4: gỡ `pairing_token`, `invite_url`, `POST /channels/sessions/resolve`, claim bằng token | Chỉ làm **sau** khi mobile bật force update (`min_version`) | P1 |
 
 ---
 
-## 2. Vòng đời thiết bị sau uninstall — chưa có dọn dẹp
+## 1. Vòng đời thiết bị sau uninstall — job dọn định kỳ (tuỳ chọn)
 
-- **Vấn đề**: app bị xoá → server không biết; device record, channel membership, key envelopes, FCM token tồn tại vĩnh viễn trong Firestore. FCM bell gửi thất bại (`messaging/registration-token-not-registered`) hiện chỉ bị nuốt: `fcm.service.ts` `sendDataNotification` catch → `logger.warn` → return `''`.
-- **Hướng xử lý**:
-  1. Trong `sendDataNotification`, khi gặp `messaging/invalid-registration-token` / `messaging/registration-token-not-registered`: đánh dấu device `fcm_token = undefined` (hoặc flag `unregistered_at`) để các bell sau skip rẻ hơn.
-  2. (Tuỳ chọn) Job dọn định kỳ: device không `last_seen_at` quá N ngày + token unregistered → review membership/envelope cleanup (cẩn trọng: chỉ dọn token, không tự revoke membership — quyết định nghiệp vụ).
+- Token chết đã tự xoá khi FCM báo `registration-token-not-registered` / `invalid-registration-token` (`FcmService` → `deviceService.clearFcmToken`, so-khớp-rồi-xoá trong transaction: token mới upload sau đó được giữ).
+- Còn lại: job dọn định kỳ device không `last_seen_at` quá N ngày + không còn token → review membership/envelope cleanup (chỉ dọn token, không tự revoke membership — quyết định nghiệp vụ).
+- Lưu ý từ backup/khôi phục (mobile 1.1): máy khôi phục dùng lại `device_id` + `device_token` cũ và gửi FCM token mới — **không** được coi đó là thiết bị mới.
 
 ---
 
-## 3. Phát hiện review 07/10/2026 — chưa xử lý
+## 2. API mới
+
+| # | Hạng mục | Chi tiết | Ưu tiên |
+|---|---|---|---|
+| 2.1 | Đổi tên kênh `PUT /api/v2/channels/name` | Owner only (`403 FORBIDDEN`); `z.object({ channel_id, name: z.string().trim().min(1).max(50) })`; chỉ cập nhật `channels/{id}.name` (metadata hiển thị, không rotate epoch); tuỳ chọn bell cho member. Đi cùng mobile 1.5. | P2 |
+| 2.2 | Vòng đời kênh: member tự rời (`leave`), Owner lưu trữ/giải tán (`archive`) | `leave` = revoke chính mình → Owner phải rotate ở lần gửi kế tiếp (409 `EPOCH_OUTDATED` đã tự phục hồi phía native). Đi cùng mobile 1.4. | P2 |
+| 2.3 | Lịch sử request đã xử lý cho Owner | `GET /channels/requests?status=` đã có — kiểm tra phân trang + giới hạn số bản ghi trước khi mobile dùng (mobile 1.6). | P3 |
+
+---
+
+## 3. Quan sát / log
 
 | # | Hạng mục | Chi tiết |
 |---|---|---|
-| 3.1 | Filter `fcm_token` lọt chuỗi rỗng | `message.v2.service.ts` `notifyNewMessage`: `device?.fcm_token !== undefined` → token `''` vẫn pass rồi fail im lặng. Sửa thành truthy check `!!device?.fcm_token` (áp cùng pattern cho mọi nơi bắn bell: pairing.v2.controller, channel.v2.controller) |
-| 3.2 | Log đếm bell | Các điểm bắn bell fail im lặng (chỉ warn rời rạc). Cân nhắc log có cấu trúc: số bell gửi thành công / số device thiếu token / số lỗi — để debug "không thấy FCM" nhanh hơn |
-| 3.3 | Endpoint `/.well-known/assetlinks.json` cho Deeplink App Links | Phục vụ file JSON xác thực SHA-256 fingerprint ứng dụng Android để hệ điều hành mở trực tiếp app không qua popup hỏi trình duyệt |
-| 3.4 | Schema & API Whitelist theo từng Channel | Mở rộng doc `channels`: thêm trường `sender_whitelist` (mảng string hoặc regex rule). Bổ sung endpoint `PUT /api/v2/channels/whitelist` để Owner đồng bộ cấu hình whitelist lên server và khôi phục khi đổi máy |
-| 3.5 | API Đổi tên Kênh (`PUT /api/v2/channels/:channel_id/name`) | • Endpoint cho phép Owner đổi tên hiển thị của kênh.<br>• Guard: `403 NOT_OWNER` nếu caller không phải Owner.<br>• Schema: `z.object({ name: z.string().trim().min(1).max(50) })`.<br>• Cập nhật `channels/{channelId}.name` trong Firestore (display-only metadata, không cần rotate epoch).<br>• (Tuỳ chọn) Bắn FCM thông báo cho các active member để đồng bộ tên kênh mới. |
+| 3.1 | Log đếm bell cho JOIN_REQUEST / APPROVED / REVOKED | `NEW_MESSAGE` đã có log `members/sent/failed/no_token`; các bell còn lại gửi 1 thiết bị, vẫn chỉ `warn` khi lỗi. |
+| 3.2 | CI cho pull request | Repo chỉ có `keep-alive.yml`. Thêm workflow `pull_request`: `npm ci`, `npx tsc --noEmit`, `npm run lint`, `npm test` (Jest chạy offline bằng Firestore mock). Đặc biệt quan trọng vì `main` tự deploy lên Render. |
 
 ---
 
 ## 4. Hạng mục đã hoàn thành (tham khảo — đừng làm lại)
 
-- Kiến trúc V2 channel 1-to-N E2EE đầy đủ (sessions, claim/approve/reject/cancel, revoke + rotate, key envelopes, messages by date) — spec: `SERVER_API_SPEC.md`, `SRD_DATABASE.md` (cùng repo này).
-- Xoá toàn bộ stack V1 (pair/relay routes, controllers, session.service, schemas, types, tests) + refactor health endpoint.
-- Cập nhật tài liệu `README.md` sang kiến trúc V2 channel (đặc tả endpoints V2, xóa bỏ mô tả V1 cũ).
-- FCM chuông V2: notification block + channel_name cho đủ 4 kind (NEW_MESSAGE / JOIN_REQUEST / APPROVED / REVOKED); sender cũng nhận bell NEW_MESSAGE (đúng spec §7).
-- Anti-replay T5 dùng chung `checkAndRecordHash` (bind hash `sha256(channel_id|nonce|ciphertext)`).
+- **22/10/2026**: `ANDROID_CERT_SHA256` đã đặt trên Render (SHA release + debug máy build); `assetlinks.json` production đúng, máy test báo App Links `verified` (cũ: mục 0.1). Đổi keystore/máy build → chạy lại `scripts/print_android_sha256.sh` của repo mobile và cập nhật biến.
+- **22/10/2026**: tự xoá FCM token chết (cũ: bước 1 mục 1); log đếm bell `NEW_MESSAGE` (một phần mục 3.1).
+- **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
+- **Nhánh `feat/otp-notification`** (chưa merge, xem 0.2): `NEW_MESSAGE` data-only cho Android kèm `sequence_number` + `sender_device_id`; `GET /api/v2/channels/message` (§6.4).
+- **21/10/2026** (đã lên `main`):
+  - Universal Opaque QR v3.3: con trỏ `qr_codes/{sha256(code)}`, `GET /api/v2/qr/resolve`, claim bằng `code`, `/qr/:code` fallback, `/.well-known/assetlinks.json` + AASA (từ env).
+  - Xoay khoá idempotent: biên nhận `last_rotation` (hash package) → gửi lại y hệt trả `200 replayed: true`; 409 kèm `current_epoch` / `membership_version`; `ChannelMembershipService` là nơi duy nhất ghi epoch/envelope.
+- **19/10/2026**: whitelist theo từng kênh `PUT /api/v2/channels/whitelist` (optimistic version).
+- Kiến trúc V2 channel 1-to-N E2EE đầy đủ (sessions, claim/approve/reject/cancel, revoke + rotate, key envelopes, messages by date) — spec: `SERVER_API_SPEC.md`, `SRD_DATABASE.md`.
+- Xoá toàn bộ stack V1 + refactor health endpoint; README sang kiến trúc V2.
+- FCM chuông V2 cho đủ 4 kind (NEW_MESSAGE / JOIN_REQUEST / APPROVED / REVOKED).
+- Anti-replay T5 dùng chung `checkAndRecordHash` (`sha256(channel_id|nonce|ciphertext)`).

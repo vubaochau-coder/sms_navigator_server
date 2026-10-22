@@ -27,6 +27,7 @@ import {
   keyEnvelopeQuerySchema,
   messageSendV2Schema,
   messagesFetchQuerySchema,
+  messageFetchOneQuerySchema,
   channelRevokeSchema,
   channelWhitelistUpdateSchema,
   qrResolveQuerySchema
@@ -138,6 +139,15 @@ router.post(
   v2MessageRateLimiter,
   validateBody(messageSendV2Schema),
   asyncHandler(MessageV2Controller.sendMessage)
+);
+
+// GET /api/v2/channels/message — single message for the OTP notification (§6.4)
+router.get(
+  '/channels/message',
+  authenticate,
+  v2ReadRateLimiter,
+  validateQuery(messageFetchOneQuerySchema),
+  asyncHandler(MessageV2Controller.fetchMessage)
 );
 
 router.post(

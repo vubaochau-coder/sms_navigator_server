@@ -366,9 +366,35 @@ sách kênh từ `req.device` (Q2 → Q4); client **không truyền `channel_id`
 - Sequence vẫn là ordering/anti-replay phía server (KL7, T5) — không phải cơ
   chế sync của mobile.
 
+### 6.4. `GET /api/v2/channels/message?channel_id={id}&sequence_number={n}` 🔒
+
+Lấy **đúng một** tin theo `(channel_id, sequence_number)` — dùng cho FCM
+background handler trên Android để tự giải mã và hiển thị OTP trong thông báo
+(§7). Quyền đọc giống §6.3: membership `ACTIVE` tại thời điểm query (KL12).
+
+```jsonc
+// Response 200
+{ "success": true,
+  "message": { "channel_id": "...", "channel_name": "Kênh nhà",
+    "sequence_number": 129, "key_epoch": 4, "ciphertext": "...",
+    "nonce": "...", "sender_device_id": "...", "sent_at": "...",
+    "server_received_at": "..." } }
+```
+
+Lỗi: `404 NOT_FOUND` (kênh/tin không tồn tại hoặc caller chưa từng là member),
+`403 REVOKED`, `400 VALIDATION_ERROR`. Rate limit: nhóm read.
+
 ## 7. FCM — chỉ là chuông (I5)
 
-**Data payload kèm Notification block** (hỗ trợ OS tự động render banner/thông báo khi app ở background hoặc bị tắt), KHÔNG chứa ciphertext/key. Bị mất/trễ là vô hại: app luôn reconcile khi mở (SRD N8).
+FCM **KHÔNG BAO GIỜ chứa ciphertext/nonce/key**. Bị mất/trễ là vô hại: app luôn reconcile khi mở (SRD N8).
+
+- **Mặc định:** data payload kèm Notification block (OS tự render banner khi app ở background/bị tắt).
+- **`NEW_MESSAGE` cho thiết bị `platform = android`:** **data-only** (không có
+  notification block). Background handler của app gọi §6.4 để lấy đúng tin đó,
+  giải mã bằng key cục bộ và tự hiện thông báo có OTP + nút "Sao chép". Lỗi bất
+  kỳ → app hiện thông báo chung. iOS/không rõ platform vẫn nhận notification block.
+- Payload `NEW_MESSAGE` có thêm `sequence_number` và `sender_device_id` (metadata,
+  không phải nội dung) để app tải đúng tin và bỏ qua thông báo cho chính máy gửi.
 
 ```jsonc
 {
@@ -382,7 +408,7 @@ sách kênh từ `req.device` (Q2 → Q4); client **không truyền `channel_id`
 | `JOIN_REQUEST` | Owner | Có request chờ duyệt (kèm `requester_device_name` chỉ để hiện text) |
 | `APPROVED` | Requester | Được duyệt — mở app để fetch key-envelope |
 | `REVOKED` | Member bị revoke | Bị thu hồi — purge key material, kênh biến mất khỏi danh sách |
-| `NEW_MESSAGE` | Các member ACTIVE | Có tin mới — mở app sync |
+| `NEW_MESSAGE` | Các member ACTIVE | Có tin mới (kèm `sequence_number`, `sender_device_id`) — Android: data-only, app tự giải mã & hiện OTP |
 
 ## 8. Package Pattern — schema chuẩn
 

@@ -142,6 +142,31 @@ export class DeviceService {
   }
 
   /**
+   * Drops an FCM token that FCM reported as dead (app uninstalled / token
+   * rotated) so later bells skip the device instead of failing again.
+   * Compare-and-clear inside a transaction: a device that already uploaded a
+   * fresh token keeps it. Membership and envelopes are left untouched.
+   */
+  public async clearFcmToken(fcmToken: string): Promise<number> {
+    const db = getFirestoreDb();
+    if (!db || !fcmToken) return 0;
+
+    const snapshot = await db.collection(DEVICES_COLLECTION).where('fcm_token', '==', fcmToken).get();
+    let cleared = 0;
+    for (const doc of snapshot.docs) {
+      await db.runTransaction(async (tx) => {
+        const fresh = await tx.get(doc.ref);
+        const device = fromDocument(doc.id, fresh.data());
+        if (!device || device.fcm_token !== fcmToken) return;
+        // Full rewrite instead of FieldValue.delete() (unsupported by the in-memory adapter)
+        tx.set(doc.ref, toDocument({ ...device, fcm_token: undefined }));
+        cleared += 1;
+      });
+    }
+    return cleared;
+  }
+
+  /**
    * Writes last_seen_at at most once per MIN_TOUCH_INTERVAL_MS per device.
    * `authenticate` calls this on every authenticated request — without the
    * throttle that would be one Firestore write (and one hot-doc contention

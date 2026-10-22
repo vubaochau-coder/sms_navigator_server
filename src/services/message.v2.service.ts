@@ -131,47 +131,98 @@ export class MessageV2Service {
       };
     });
 
-    await this.notifyNewMessage(input.channel_id);
+    await this.notifyNewMessage(input.channel_id, result.sequence_number, ownerId);
     return result;
   }
 
-  /** FCM wake-up bell to ACTIVE members (never carries ciphertext — I5/N8). */
-  private async notifyNewMessage(channelId: string): Promise<void> {
+  /**
+   * FCM wake-up bell to ACTIVE members (never carries ciphertext or keys — I5/N8).
+   *
+   * Android gets a **data-only** message so the app's background handler can
+   * pull the single message (`GET /channels/message`), decrypt it locally and
+   * render the OTP itself. iOS (and unknown platforms) keep the notification
+   * block, because the OS does not reliably wake the app for data-only pushes.
+   */
+  private async notifyNewMessage(channelId: string, sequenceNumber: number, senderDeviceId: string): Promise<void> {
     try {
       const members = await channelService.listActiveMembers(channelId);
       if (members.length === 0) return;
 
       const channel = await channelService.findChannelById(channelId);
       const channelName = channel?.name;
-      const body = channelName
-        ? `Có tin nhắn SMS mới từ kênh "${channelName}". Chạm để xem.`
-        : 'Có tin nhắn SMS mới vừa được chia sẻ. Chạm để xem.';
+      const notification = {
+        title: 'Tin nhắn SMS mới',
+        body: channelName
+          ? `Có tin nhắn SMS mới từ kênh "${channelName}". Chạm để xem.`
+          : 'Có tin nhắn SMS mới vừa được chia sẻ. Chạm để xem.'
+      };
+      const data: Record<string, string> = {
+        type: 'CHANNEL_EVENT',
+        channel_id: channelId,
+        ...(channelName ? { channel_name: channelName } : {}),
+        kind: 'NEW_MESSAGE',
+        sequence_number: String(sequenceNumber),
+        sender_device_id: senderDeviceId
+      };
 
       // One batched round of device reads instead of one per member
       const devices = await Promise.all(members.map((member) => deviceService.findByDeviceId(member.device_id)));
-      await Promise.all(
-        devices
-          .filter((device): device is NonNullable<typeof device> => device?.fcm_token !== undefined)
-          .map((device) =>
-            fcmService.sendDataNotification(
-              device.fcm_token!,
-              {
-                type: 'CHANNEL_EVENT',
-                channel_id: channelId,
-                ...(channelName ? { channel_name: channelName } : {}),
-                kind: 'NEW_MESSAGE'
-              },
-              {
-                title: 'Tin nhắn SMS mới',
-                body
-              }
-            )
+      // Truthy check: an empty-string token would otherwise pass and fail silently
+      const reachable = devices.filter((device): device is NonNullable<typeof device> => Boolean(device?.fcm_token));
+      const messageIds = await Promise.all(
+        reachable.map((device) =>
+          fcmService.sendDataNotification(
+            device.fcm_token!,
+            data,
+            device.platform === 'android' ? undefined : notification
           )
+        )
+      );
+      const sent = messageIds.filter(Boolean).length;
+      logger.info(
+        `[MessageV2] NEW_MESSAGE bells for channel ${channelId}: members=${members.length} ` +
+          `sent=${sent} failed=${messageIds.length - sent} no_token=${members.length - reachable.length}`
       );
     } catch (error) {
       // Best-effort: FCM is a wake-up signal, never part of the consistency path (N8)
       logger.warn('[MessageV2] Failed to send NEW_MESSAGE bells:', { error: String(error) });
     }
+  }
+
+  /**
+   * GET /channels/message (§6.4) — one message by (channel_id, sequence_number),
+   * used by the FCM background handler to render the OTP. Authorization is
+   * the same as §6.3: ACTIVE membership at query time (KL12).
+   */
+  public async fetchMessage(deviceId: string, channelId: string, sequenceNumber: number): Promise<FetchedMessage> {
+    const db = getFirestoreDb();
+    if (!db) throw new Error('Firestore is not available');
+
+    await channelService.requireActiveMember(channelId, deviceId);
+
+    const snapshot = await db
+      .collection(CHANNEL_MESSAGES_COLLECTION)
+      .where('channel_id', '==', channelId)
+      .where('sequence_number', '==', sequenceNumber)
+      .limit(1)
+      .get();
+    const entity = snapshot.docs.length > 0 ? messageFromDocument(snapshot.docs[0].data()) : null;
+    if (!entity) {
+      throw new HttpError(404, 'NOT_FOUND', `Message #${sequenceNumber} does not exist in this channel`);
+    }
+
+    const channel = await channelService.findChannelById(channelId);
+    return {
+      channel_id: entity.channel_id,
+      channel_name: channel?.name ?? '',
+      sequence_number: entity.sequence_number,
+      key_epoch: entity.key_epoch,
+      ciphertext: entity.ciphertext,
+      nonce: entity.nonce,
+      sender_device_id: entity.sender_device_id,
+      sent_at: entity.sent_at,
+      server_received_at: entity.server_received_at
+    };
   }
 
   /**

@@ -272,6 +272,17 @@ export class MessageV2Controller {
     });
   }
 
+  /** GET /api/v2/channels/message?channel_id=&sequence_number= — single message (§6.4). */
+  public static async fetchMessage(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const channelId = String(req.query.channel_id);
+    const sequenceNumber = Number(req.query.sequence_number);
+
+    const message = await messageV2Service.fetchMessage(device.device_id, channelId, sequenceNumber);
+
+    res.status(200).json({ success: true, message });
+  }
+
   /** GET /api/v2/messages?date=&tz_offset= — channel-agnostic day fetch (§6.3). */
   public static async fetchMessages(req: Request, res: Response): Promise<void> {
     const device = req.device!;
