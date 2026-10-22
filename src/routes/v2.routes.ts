@@ -18,6 +18,7 @@ import {
   deviceNameV2Schema,
   channelCreateSchema,
   channelIdQuerySchema,
+  channelRenameSchema,
   channelSessionCreateSchema,
   pairingRequestClaimSchema,
   channelRequestsQuerySchema,
@@ -93,6 +94,15 @@ router.get(
   authenticate,
   validateQuery(channelIdQuerySchema),
   asyncHandler(ChannelV2Controller.getDetail)
+);
+
+// PUT /api/v2/channels/name — Owner renames the channel (display-only)
+router.put(
+  '/channels/name',
+  authenticate,
+  v2NameRateLimiter,
+  validateBody(channelRenameSchema),
+  asyncHandler(ChannelV2Controller.rename)
 );
 
 router.get(

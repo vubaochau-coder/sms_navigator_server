@@ -452,6 +452,37 @@ export class ChannelService {
   }
 
   /**
+   * PUT /channels/name (API spec §4.8): Owner renames the channel. Display-only
+   * metadata — no epoch / membership_version change, no key rotation. Pending
+   * requests and channel lists read the name live, so nothing else to fan out.
+   */
+  public async renameChannel(channelId: string, callerDeviceId: string, name: string): Promise<ChannelEntity> {
+    const db = getFirestoreDb();
+    if (!db) throw new Error('Firestore is not available');
+
+    const channelRef = db.collection(CHANNELS_COLLECTION).doc(channelId);
+    const now = nowIso();
+
+    return db.runTransaction(async (tx) => {
+      const doc = await tx.get(channelRef);
+      if (!doc.exists) {
+        throw new HttpError(404, 'NOT_FOUND', `Channel ${channelId} does not exist`);
+      }
+      const channel = channelFromDocument(doc.id, doc.data());
+      if (!channel) throw new HttpError(500, 'SERVER_ERROR', 'Corrupted channel document');
+      if (channel.owner_device_id !== callerDeviceId) {
+        throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can rename the channel');
+      }
+      if (channel.status !== 'ACTIVE') {
+        throw new HttpError(409, 'CHANNEL_NOT_ACTIVE', 'This channel is archived');
+      }
+
+      tx.update(channelRef, { name, updated_at: now });
+      return { ...channel, name, updated_at: now };
+    });
+  }
+
+  /**
    * GET /channels/key-envelope (API spec §6.1): envelope of the caller for the
    * given epoch; `epoch` omitted → highest provisioned epoch ("latest" mode,
    * SRD 7.3 recovery). 403 REVOKED per KL12; 404 if never provisioned (KL8).

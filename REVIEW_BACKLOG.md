@@ -34,3 +34,15 @@
 - [ ] Trên máy 1.1.0: Owner tạo QR → Member quét/bấm link → duyệt → nhận tin (end-to-end).
 - [ ] Gọi tay `POST /api/v2/channels/sessions/resolve` → 404.
 
+## P2-1 · Đổi tên kênh `PUT /api/v2/channels/name` (BACKLOG 2.1)
+
+**Rà soát**
+- [ ] Owner-only (`403 NOT_OWNER`), kênh `ARCHIVED` → `409 CHANNEL_NOT_ACTIVE`, update trong transaction.
+- [ ] ⚠️ Giới hạn tên **1–100** (giống `POST /channels`), backlog cũ ghi 50 — chọn 100 để kênh đã tạo tên dài vẫn đổi được. App dialog cũng 100.
+- [ ] Không bắn FCM: app 1.1.0 hiện FCM data-only `kind` lạ thành thông báo chung → tránh spam. Member thấy tên mới khi refresh.
+- [ ] `tests/helpers/v2-client.ts` — helper dùng chung cho các test file mới (không đụng `api-v2.test.ts`).
+
+**Kiểm thử**
+- [ ] Jest `channel-rename.test.ts`.
+- [ ] Gọi thật: đổi tên → `GET /channels` của member thấy tên mới; SMS relay tiếp theo trên máy Owner hiện tên mới trong log.
+

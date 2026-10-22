@@ -82,6 +82,21 @@ export class ChannelV2Controller {
     });
   }
 
+  /** PUT /api/v2/channels/name (§4.8): Owner renames the channel (display-only). */
+  public static async rename(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const { channel_id, name } = req.body as { channel_id: string; name: string };
+
+    const channel = await channelService.renameChannel(channel_id, device.device_id, name);
+
+    res.status(200).json({
+      success: true,
+      channel_id: channel.channel_id,
+      name: channel.name,
+      updated_at: channel.updated_at
+    });
+  }
+
   /** GET /api/v2/channels/members?channel_id= (§4.4): Owner sees all, Member ACTIVE only. */
   public static async getMembers(req: Request, res: Response): Promise<void> {
     const device = req.device!;

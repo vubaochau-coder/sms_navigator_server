@@ -74,6 +74,12 @@ export const channelCreateSchema = z.object({
   package: packageSchema
 });
 
+/** PUT /channels/name — Owner renames the channel (display-only, same limits as create). */
+export const channelRenameSchema = z.object({
+  channel_id: z.string().min(1, 'channel_id is required'),
+  name: z.string().trim().min(1, 'name cannot be empty').max(100)
+});
+
 export const channelIdQuerySchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required')
 });

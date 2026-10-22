@@ -222,6 +222,20 @@ Thay bằng `GET /api/v2/qr/resolve?code=` (cùng các lỗi fail-early: `404`,
 { "success": true, "current_epoch": 4, "membership_version": 5 }
 ```
 
+### 4.8. `PUT /api/v2/channels/name` — đổi tên kênh 🔒 (Owner)
+
+```jsonc
+// Request (body) — name: trim, 1–100 ký tự (cùng giới hạn tạo kênh)
+{ "channel_id": "...", "name": "Kênh VCB" }
+// Response 200
+{ "success": true, "channel_id": "...", "name": "Kênh VCB", "updated_at": "ISO" }
+```
+
+Chỉ là metadata hiển thị: **không** đổi `current_epoch` / `membership_version`,
+không rotate key, không bắn FCM (member thấy tên mới ở lần tải danh sách / chi
+tiết kế tiếp). Lỗi: `403 NOT_OWNER`, `404 NOT_FOUND`, `409 CHANNEL_NOT_ACTIVE`,
+`400 VALIDATION_ERROR`. Rate limit dùng chung `v2NameRateLimiter`.
+
 ## 5. Pairing (claim → duyệt)
 
 ### 5.1. `POST /api/v2/pairing/requests` — T1 (Member claim) 🔒
