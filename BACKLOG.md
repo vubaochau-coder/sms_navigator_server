@@ -27,7 +27,6 @@
 
 | # | Hạng mục | Chi tiết | Ưu tiên |
 |---|---|---|---|
-| 2.3 | Lịch sử request đã xử lý cho Owner | `GET /channels/requests?status=` đã có — kiểm tra phân trang + giới hạn số bản ghi trước khi mobile dùng (mobile 1.6). | P3 |
 
 ---
 
@@ -46,6 +45,7 @@
   - Clean-cut v4: gỡ `pairing_token` / `invite_url` khỏi `POST /channels/sessions`, gỡ `POST /channels/sessions/resolve`, claim chỉ bằng `code`; cập nhật API spec + SRD — cũ: mục 0.3. **Deploy sau khi `app_update_min_build` ≥ 20.**
   - Đổi tên kênh `PUT /api/v2/channels/name` (Owner, 1–100 ký tự, display-only, không FCM) + spec §4.8 — cũ: mục 2.1.
   - Vòng đời kênh: `POST /channels/leave` (REVOKED + `rotation_pending`, bell MEMBER_LEFT), `POST /channels/rotate` (Owner re-key), `POST /channels/archive` (terminal, huỷ invite/request, ẩn tin, bell REVOKED/ARCHIVED); chặn tạo QR trên kênh đã giải tán; spec §4.9–4.11 — cũ: mục 2.2.
+  - Lịch sử request đã xử lý: `GET /channels/requests?status=HISTORY` + phân trang `limit`/`before`, item có `status`/`decided_at`; spec §5.3 — cũ: mục 2.3.
 - **22/10/2026**: `ANDROID_CERT_SHA256` đã đặt trên Render (SHA release + debug máy build); `assetlinks.json` production đúng, máy test báo App Links `verified` (cũ: mục 0.1). Đổi keystore/máy build → chạy lại `scripts/print_android_sha256.sh` của repo mobile và cập nhật biến.
 - **22/10/2026**: tự xoá FCM token chết (cũ: bước 1 mục 1); log đếm bell `NEW_MESSAGE` (một phần mục 3.1).
 - **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).

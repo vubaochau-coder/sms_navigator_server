@@ -322,9 +322,20 @@ Không cần tham số — suy từ `req.device`.
   "created_at": "...", "decided_at": "..." } ] }
 ```
 
-### 5.3. `GET /api/v2/channels/requests?channel_id={id}&status=PENDING` 🔒 (Owner)
+### 5.3. `GET /api/v2/channels/requests?channel_id={id}&status=PENDING|APPROVED|REJECTED|CANCELLED|HISTORY&limit=&before=` 🔒 (Owner)
 
-Hàng đợi duyệt (Q1): `{ requests: [{request_id, requester_device_name, created_at}] }`.
+- `status=PENDING` (mặc định): hàng đợi duyệt (Q1), mới tạo trước.
+- `status=HISTORY`: mọi request đã xử lý (`APPROVED` / `REJECTED` / `CANCELLED`),
+  sắp theo `decided_at` mới nhất trước.
+- `limit` 1–100 (mặc định 50); trang sau gửi `before = next_before` của trang trước.
+
+```jsonc
+{ "success": true,
+  "requests": [ { "request_id": "...", "requester_device_id": "...", "requester_device_name": "...",
+                  "requester_public_key": "...", "status": "REJECTED",
+                  "created_at": "ISO", "decided_at": "ISO" } ],
+  "next_before": "ISO" | null }
+```
 
 ### 5.4. `POST /api/v2/pairing/requests/approve` — T2 (Owner package) 🔒
 

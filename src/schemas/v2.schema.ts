@@ -99,9 +99,16 @@ export const qrResolveQuerySchema = z.object({
   code: z.string().regex(QR_CODE_PATTERN, 'code must be a 22-char base64url string')
 });
 
+/**
+ * GET /channels/requests (§5.3). `status=HISTORY` = every processed request
+ * (APPROVED / REJECTED / CANCELLED), newest decision first, paged with
+ * `limit` + `before` (the `next_before` cursor of the previous page).
+ */
 export const channelRequestsQuerySchema = z.object({
   channel_id: z.string().min(1, 'channel_id is required'),
-  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']).optional().default('PENDING')
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'HISTORY']).optional().default('PENDING'),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  before: z.string().datetime().optional()
 });
 
 /** POST /pairing/requests/approve — T2 Owner package with rotate (§5.4). */

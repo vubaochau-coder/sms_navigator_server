@@ -66,3 +66,14 @@
 - [ ] E2E với app (mobile P2-2): member rời → Owner nhận bell → mở app → tự rotate (epoch +1) → SMS tiếp theo vẫn tới các member còn lại.
 - [ ] Owner giải tán → member (cả bản 1.1.0) nhận thông báo, kênh biến mất.
 
+## P2-3 · Lịch sử request đã xử lý — `GET /channels/requests?status=HISTORY` (BACKLOG 2.3)
+
+**Rà soát**
+- [ ] `status=HISTORY` = `in [APPROVED, REJECTED, CANCELLED]`, sắp theo `decided_at` (fallback `terminal_at`/`created_at`), `limit` 1–100 (mặc định 50) + cursor `before`/`next_before`.
+- [ ] Mỗi item thêm `status` (+ `decided_at` nếu có) — field mới, client cũ bỏ qua được.
+- [ ] ⚠️ Lọc/sắp/cắt trang làm **trong bộ nhớ** sau 1 query `channel_id + status in` (index sẵn có); đủ cho quy mô kênh gia đình. Khi một kênh có hàng nghìn request → chuyển sang `orderBy(decided_at).limit()` + composite index.
+- [ ] Hàng đợi PENDING giờ cũng bị cắt ở 50 (trước đây không giới hạn).
+
+**Kiểm thử**
+- [ ] Jest `channel-requests-history.test.ts`.
+

@@ -28,6 +28,10 @@ import {
 // Re-exported for existing importers.
 export { PAIRING_SESSIONS_COLLECTION, PAIRING_REQUESTS_COLLECTION, PAIRING_PENDING_COLLECTION, pairingPendingDocId };
 
+/** Processed (terminal) request statuses served by `status=HISTORY`. */
+const HISTORY_STATUSES = ['APPROVED', 'REJECTED', 'CANCELLED'] as const;
+const DEFAULT_REQUESTS_PAGE = 50;
+
 /** N5/I9: QR invite is single-use with a 10-minute TTL. */
 export const SESSION_TTL_MS = 10 * 60 * 1000;
 
@@ -389,14 +393,20 @@ export class PairingV2Service {
     }));
   }
 
-  /** GET /channels/requests (API spec §5.3): Owner approval queue (Q1). */
+  /**
+   * GET /channels/requests (API spec §5.3): Owner approval queue (Q1), or the
+   * processed history (`status=HISTORY`, BACKLOG 2.3). Sorted newest first by
+   * decision time (history) / creation time (a single status), capped at
+   * `limit` (default 50) with a `next_before` cursor.
+   */
   public async listChannelRequests(
     ownerId: string,
     channelId: string,
-    status: string
-  ): Promise<Array<Record<string, unknown>>> {
+    status: string,
+    page: { limit?: number; before?: string } = {}
+  ): Promise<{ requests: Array<Record<string, unknown>>; next_before: string | null }> {
     const db = getFirestoreDb();
-    if (!db) return [];
+    if (!db) return { requests: [], next_before: null };
 
     const channel = await db.collection(CHANNELS_COLLECTION).doc(channelId).get();
     if (!channel.exists) {
@@ -406,24 +416,36 @@ export class PairingV2Service {
       throw new HttpError(403, 'NOT_OWNER', 'Only the channel owner can view the approval queue');
     }
 
+    const history = status === 'HISTORY';
     const snapshot = await db
       .collection(PAIRING_REQUESTS_COLLECTION)
       .where('channel_id', '==', channelId)
-      .where('status', '==', status)
+      .where('status', history ? 'in' : '==', history ? [...HISTORY_STATUSES] : status)
       .get();
 
-    return snapshot.docs
+    const limit = page.limit ?? DEFAULT_REQUESTS_PAGE;
+    const sortKey = (request: PairingRequestEntity): string =>
+      history ? request.decided_at ?? request.terminal_at ?? request.created_at : request.created_at;
+    const sorted = snapshot.docs
       .map((doc) => requestFromDocument(doc.data()))
       .filter((request): request is PairingRequestEntity => request !== null)
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .map((request) => ({
+      .filter((request) => !page.before || sortKey(request) < page.before)
+      .sort((a, b) => sortKey(b).localeCompare(sortKey(a)));
+    const pageItems = sorted.slice(0, limit);
+
+    return {
+      requests: pageItems.map((request) => ({
         request_id: request.request_id,
         requester_device_id: request.requester_device_id,
         requester_device_name: request.requester_device_name,
         // Owner cần pk của requester để wrap envelope epoch mới (SRD 7.2)
         requester_public_key: request.requester_public_key,
-        created_at: request.created_at
-      }));
+        status: request.status,
+        created_at: request.created_at,
+        ...(request.decided_at ? { decided_at: request.decided_at } : {})
+      })),
+      next_before: sorted.length > limit ? sortKey(pageItems[pageItems.length - 1]) : null
+    };
   }
 
   /**

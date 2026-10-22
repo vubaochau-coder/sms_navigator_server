@@ -325,12 +325,18 @@ export class PairingChannelV2Controller {
     const device = req.device!;
     const channelId = String(req.query.channel_id);
     const status = String(req.query.status ?? 'PENDING');
+    const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+    const before = req.query.before === undefined ? undefined : String(req.query.before);
 
-    const requests = await pairingV2Service.listChannelRequests(device.device_id, channelId, status);
+    const { requests, next_before } = await pairingV2Service.listChannelRequests(device.device_id, channelId, status, {
+      limit,
+      before
+    });
 
     res.status(200).json({
       success: true,
-      requests
+      requests,
+      next_before
     });
   }
 }
