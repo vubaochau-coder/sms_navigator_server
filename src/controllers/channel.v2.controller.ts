@@ -152,6 +152,17 @@ export class ChannelV2Controller {
     });
   }
 
+  /** GET /api/v2/key-envelopes[?channel_id=] — all envelopes of the caller (§6.1b). */
+  public static async listKeyEnvelopes(req: Request, res: Response): Promise<void> {
+    const device = req.device!;
+    const channelIdRaw = req.query.channel_id;
+    const channelId = typeof channelIdRaw === 'string' && channelIdRaw.length > 0 ? channelIdRaw : undefined;
+
+    const channels = await channelService.listKeyEnvelopesForDevice(device.device_id, channelId);
+
+    res.status(200).json({ success: true, channels });
+  }
+
   /** POST /api/v2/channels/revoke — T4 revoke + auto-rotate (Owner package, §4.6). */
   public static async revoke(req: Request, res: Response): Promise<void> {
     const device = req.device!;

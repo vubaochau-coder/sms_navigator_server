@@ -32,6 +32,20 @@ import {
 // Re-exported for existing importers (tests, other services).
 export { CHANNELS_COLLECTION, CHANNEL_MEMBERS_COLLECTION, CHANNEL_KEY_ENVELOPES_COLLECTION, channelMemberDocId, envelopeDocId };
 
+export interface KeyEnvelopeItem {
+  key_epoch: number;
+  wrapped_key: string;
+  nonce: string;
+  kek_alg: string;
+}
+
+export interface DeviceKeyEnvelopes {
+  channel_id: string;
+  current_epoch: number;
+  owner_public_key: string;
+  envelopes: KeyEnvelopeItem[];
+}
+
 function channelFromDocument(id: string, data: Record<string, unknown> | undefined): ChannelEntity | null {
   if (!data || typeof data.name !== 'string') return null;
   const rawWhitelist = data.whitelist as Record<string, unknown> | undefined;
@@ -488,6 +502,79 @@ export class ChannelService {
       tx.update(channelRef, { name, updated_at: now });
       return { ...channel, name, updated_at: now };
     });
+  }
+
+  /**
+   * GET /key-envelopes (API spec §6.1b): every envelope of the caller, grouped
+   * by channel, in one call — replaces `detail + key-envelope` per channel and
+   * per epoch on the client (FLOW_AUDIT K1/K2, N+1).
+   *
+   * - Only channels the caller is ACTIVE in (KL12); revoked channels are
+   *   simply absent.
+   * - Only epochs >= the caller's `joined_epoch` (a re-joined member does not
+   *   get the envelopes of a previous membership back) — and only envelopes
+   *   that exist for this device, so nothing beyond KL8.
+   * - Each channel carries `owner_public_key` (needed to unwrap: ECDH with the
+   *   owner) and `current_epoch`.
+   */
+  public async listKeyEnvelopesForDevice(deviceId: string, channelId?: string): Promise<DeviceKeyEnvelopes[]> {
+    const db = getFirestoreDb();
+    if (!db) throw new Error('Firestore is not available');
+
+    let memberships: ChannelMemberEntity[];
+    if (channelId) {
+      memberships = [await this.requireActiveMember(channelId, deviceId)];
+    } else {
+      const snapshot = await db
+        .collection(CHANNEL_MEMBERS_COLLECTION)
+        .where('device_id', '==', deviceId)
+        .where('status', '==', 'ACTIVE')
+        .get();
+      memberships = snapshot.docs
+        .map((doc) => memberFromDocument(doc.data()))
+        .filter((member): member is ChannelMemberEntity => member !== null);
+    }
+    if (memberships.length === 0) return [];
+    const joinedEpochByChannel = new Map(memberships.map((m) => [m.channel_id, m.joined_epoch]));
+
+    let envelopeQuery = db.collection(CHANNEL_KEY_ENVELOPES_COLLECTION).where('device_id', '==', deviceId);
+    if (channelId) envelopeQuery = envelopeQuery.where('channel_id', '==', channelId);
+    const envelopeSnapshot = await envelopeQuery.get();
+
+    const channelDocs = await Promise.all(
+      [...joinedEpochByChannel.keys()].map((id) => db.collection(CHANNELS_COLLECTION).doc(id).get())
+    );
+    const channels = channelDocs
+      .map((doc) => channelFromDocument(doc.id, doc.data()))
+      .filter((channel): channel is ChannelEntity => channel !== null && channel.status === 'ACTIVE');
+    const ownerDocs = await Promise.all(
+      [...new Set(channels.map((c) => c.owner_device_id))].map((id) => db.collection(DEVICES_COLLECTION).doc(id).get())
+    );
+    const ownerKeyById = new Map(ownerDocs.map((doc) => [doc.id, String(doc.data()?.public_key ?? '')]));
+
+    const envelopesByChannel = new Map<string, KeyEnvelopeItem[]>();
+    for (const doc of envelopeSnapshot.docs) {
+      const data = doc.data() ?? {};
+      const envChannel = String(data.channel_id ?? '');
+      const epoch = Number(data.key_epoch ?? 0);
+      const joined = joinedEpochByChannel.get(envChannel);
+      if (joined === undefined || epoch < joined) continue;
+      const list = envelopesByChannel.get(envChannel) ?? [];
+      list.push({
+        key_epoch: epoch,
+        wrapped_key: String(data.wrapped_key ?? ''),
+        nonce: String(data.nonce ?? ''),
+        kek_alg: String(data.kek_alg ?? '')
+      });
+      envelopesByChannel.set(envChannel, list);
+    }
+
+    return channels.map((channel) => ({
+      channel_id: channel.channel_id,
+      current_epoch: channel.current_epoch,
+      owner_public_key: ownerKeyById.get(channel.owner_device_id) ?? '',
+      envelopes: (envelopesByChannel.get(channel.channel_id) ?? []).sort((a, b) => a.key_epoch - b.key_epoch)
+    }));
   }
 
   /**

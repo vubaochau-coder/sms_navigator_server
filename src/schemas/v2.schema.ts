@@ -128,6 +128,11 @@ export const keyEnvelopeQuerySchema = z.object({
   epoch: z.coerce.number().int().positive().optional()
 });
 
+/** GET /key-envelopes — every envelope of the caller, optionally one channel (§6.1b). */
+export const keyEnvelopesQuerySchema = z.object({
+  channel_id: z.string().min(1).optional()
+});
+
 /** POST /channels/messages — T5 + T3 (§6.2). */
 export const messageSendV2Schema = z.object({
   channel_id: z.string().min(1),

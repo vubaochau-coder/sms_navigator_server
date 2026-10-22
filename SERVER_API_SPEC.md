@@ -392,6 +392,29 @@ Lỗi: `409 MEMBERSHIP_CHANGED`, `422 PACKAGE_INCOMPLETE`, `409 REQUEST_NOT_PEND
   cũ đã từng được provision (KL12: authorization kết thúc tại revocation).
 - `404` nếu chưa được provision epoch đó (KL8).
 
+### 6.1b. `GET /api/v2/key-envelopes[?channel_id={id}]` 🔒
+
+Mọi envelope của **máy gọi**, gom theo kênh, trong **một** request — để client
+giữ key của **mọi** epoch được cấp (SRD §8.4) mà không phải gọi
+`detail + key-envelope` cho từng kênh / từng epoch.
+
+```jsonc
+// Response 200
+{ "success": true,
+  "channels": [
+    { "channel_id": "...", "current_epoch": 5,
+      "owner_public_key": "<b64 X25519>",          // để unwrap (ECDH với Owner)
+      "envelopes": [ { "key_epoch": 3, "wrapped_key": "...", "nonce": "...", "kek_alg": "..." },
+                     { "key_epoch": 4, ... }, { "key_epoch": 5, ... } ] } ] }
+```
+
+- Chỉ kênh caller đang **ACTIVE** (KL12) — kênh bị revoke không xuất hiện.
+- Chỉ epoch `>= joined_epoch` của membership hiện tại; chỉ envelope đã cấp cho
+  chính máy này (không vượt KL8). Sắp xếp `key_epoch` tăng dần.
+- `?channel_id=` → chỉ kênh đó; caller chưa từng là member → `404`, đã bị
+  revoke → `403 REVOKED`.
+- Client bỏ qua epoch đã có key; giữ `GET /channels/key-envelope` cho app cũ.
+
 ### 6.2. `POST /api/v2/channels/messages` — T5 + T3 🔒 (Owner)
 
 ```jsonc

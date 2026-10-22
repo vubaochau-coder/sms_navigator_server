@@ -1278,6 +1278,87 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
     });
   });
 
+  describe('GET /api/v2/key-envelopes (§6.1b)', () => {
+    const envelopesOf = async (token: string, query = '') => {
+      const res = await request(server).get(`/api/v2/key-envelopes${query}`).set(bearer(token));
+      return res;
+    };
+
+    it('returns every epoch the caller was provisioned, per ACTIVE channel, with the owner key', async () => {
+      const owner = await reg('Owner');
+      const m1 = await reg('Member 1');
+      const m2 = await reg('Member 2');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, m1); // epoch 2
+      await joinChannel(owner, channelId, m2); // epoch 3
+
+      const ownerView = await envelopesOf(owner.token);
+      expect(ownerView.status).toBe(200);
+      expect(ownerView.body.channels).toHaveLength(1);
+      expect(ownerView.body.channels[0]).toMatchObject({
+        channel_id: channelId,
+        current_epoch: 3,
+        owner_public_key: owner.publicKey
+      });
+      expect(ownerView.body.channels[0].envelopes.map((e: any) => e.key_epoch)).toEqual([1, 2, 3]);
+
+      // m1 joined at 2 → 2 and 3, never 1
+      const m1View = await envelopesOf(m1.token);
+      expect(m1View.body.channels[0].envelopes.map((e: any) => e.key_epoch)).toEqual([2, 3]);
+      for (const envelope of m1View.body.channels[0].envelopes) {
+        expect(envelope.wrapped_key).toBeTruthy();
+        expect(envelope.nonce).toBeTruthy();
+        expect(envelope.kek_alg).toBeTruthy();
+      }
+
+      const m2View = await envelopesOf(m2.token);
+      expect(m2View.body.channels[0].envelopes.map((e: any) => e.key_epoch)).toEqual([3]);
+    });
+
+    it('drops revoked channels entirely (KL12)', async () => {
+      const owner = await reg('Owner');
+      const member = await reg('Member');
+      const { channelId } = await createChannel(owner, 'Kênh');
+      await joinChannel(owner, channelId, member); // epoch 2
+
+      await request(server)
+        .post('/api/v2/channels/revoke')
+        .set(bearer(owner.token))
+        .send({
+          channel_id: channelId,
+          revoke_device_ids: [member.deviceId],
+          package: packageFor([owner.deviceId], 2, 2, 3)
+        });
+
+      const view = await envelopesOf(member.token);
+      expect(view.status).toBe(200);
+      expect(view.body.channels).toEqual([]);
+
+      const scoped = await envelopesOf(member.token, `?channel_id=${channelId}`);
+      expect(scoped.status).toBe(403);
+    });
+
+    it('?channel_id= narrows to one channel; non-members get 404; no token → 401', async () => {
+      const owner = await reg('Owner');
+      const outsider = await reg('Outsider');
+      const { channelId: a } = await createChannel(owner, 'A');
+      await createChannel(owner, 'B');
+
+      const all = await envelopesOf(owner.token);
+      expect(all.body.channels).toHaveLength(2);
+
+      const one = await envelopesOf(owner.token, `?channel_id=${a}`);
+      expect(one.status).toBe(200);
+      expect(one.body.channels.map((c: any) => c.channel_id)).toEqual([a]);
+
+      const foreign = await envelopesOf(outsider.token, `?channel_id=${a}`);
+      expect(foreign.status).toBe(404);
+
+      const noAuth = await request(server).get('/api/v2/key-envelopes');
+      expect(noAuth.status).toBe(401);
+    });
+  });
+
   describe('POST /api/v2/channels/messages (T5 + T3, §6.2)', () => {
     it('accepts owner messages and assigns monotonic sequence numbers', async () => {
       const owner = await reg('Owner');

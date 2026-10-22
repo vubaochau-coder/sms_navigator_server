@@ -27,6 +27,7 @@ import {
   pairingApproveSchema,
   pairingRequestIdSchema,
   keyEnvelopeQuerySchema,
+  keyEnvelopesQuerySchema,
   messageSendV2Schema,
   messagesFetchQuerySchema,
   messageFetchOneQuerySchema,
@@ -126,6 +127,15 @@ router.get(
   authenticate,
   validateQuery(keyEnvelopeQuerySchema),
   asyncHandler(ChannelV2Controller.getKeyEnvelope)
+);
+
+// GET /api/v2/key-envelopes — every envelope of the caller in one call (§6.1b)
+router.get(
+  '/key-envelopes',
+  authenticate,
+  v2ReadRateLimiter,
+  validateQuery(keyEnvelopesQuerySchema),
+  asyncHandler(ChannelV2Controller.listKeyEnvelopes)
 );
 
 router.post(
