@@ -11,8 +11,22 @@
 
 | # | Hạng mục | Ghi chú | Ưu tiên |
 |---|---|---|---|
-| 0.2 | Merge `feat/otp-notification` vào `main` **sau khi** app mới đã cài trên các máy Android | `main` tự deploy lên Render. BE mới gửi `NEW_MESSAGE` data-only cho Android → app cũ không hiện thông báo khi chạy nền | P0 |
 | 0.3 | Roadmap GĐ6 — clean-cut v4: gỡ `pairing_token`, `invite_url`, `POST /channels/sessions/resolve`, claim bằng token | Chỉ làm **sau** khi mobile bật force update (`min_version`) | P1 |
+
+---
+
+## A. Lệch thiết kế & luồng chưa tối ưu (phát hiện 22/10 khi test OTP trên máy thật)
+
+Đi cùng mục A của `../sms_navigator/BACKLOG.md` (A1–A8).
+
+| # | Hạng mục | Chi tiết | Ưu tiên |
+|---|---|---|---|
+| A1 | **`GET /api/v2/key-envelopes[?channel_id=]` — gom mọi envelope của máy gọi** | Hiện client phải gọi `GET /channels/detail` + `GET /channels/key-envelope` cho từng kênh, và chỉ lấy được epoch mới nhất nếu không truyền `epoch` → lệch SRD §8.4 (mobile A1/A2/A4). Cài đặt: 1 query `channel_key_envelopes where device_id == caller` (field đã có trong document, index đơn tự động) + 1 query membership ACTIVE của caller (lọc kênh đã revoke — KL12) + đọc theo lô `channels` và public key của Owner. Trả `[{ channel_id, current_epoch, owner_public_key, envelopes: [{ key_epoch, wrapped_key, nonce, kek_alg }] }]`; chỉ các epoch đã cấp cho máy này (KL8). Rate limit nhóm read. Giữ `GET /channels/key-envelope` cho app cũ. Spec §6.1b + test. | P0 |
+| A2 | Bell `KEY_ROTATED` cho member còn lại khi rotate | Approve/revoke hiện chỉ báo requester / người bị thu hồi. Data-only `{ type: CHANNEL_EVENT, kind: KEY_ROTATED, channel_id, epoch }` cho mọi member ACTIVE khác (trừ Owner) → app lấy key ngay. Bỏ qua khi `replayed: true`. Tối ưu, không bắt buộc nếu mobile A1 + A2 xong. | P2 |
+| A3 | Ciphertext trong `NEW_MESSAGE` (chờ quyết định bỏ I5) | Thêm `ciphertext`, `nonce`, `key_epoch` vào data khi tổng payload ≤ ~3.5 KB (giới hạn FCM 4 KB), ngược lại bỏ — app tự `GET /channels/message`. Sửa spec §7 + SRD (I5), test kích thước. | P2 |
+| A4 | Chính sách lưu envelope | Envelope **không bao giờ bị xoá** (chỉ `clearAll` trong test) — đúng điều kiện cho A1 (lấy lại epoch cũ), nhưng tăng mãi và vẫn giữ envelope của member đã revoke (dù không trả ra — KL12). Quyết định: xoá envelope cũ hơn retention tin nhắn (30 ngày) và/hoặc của member đã revoke; ghi vào SRD §8.4. | P3 |
+| A5 | Thay thế thiết bị khi khôi phục backup | Đi cùng mobile A7: cấp `device_token` mới (hoặc `token_generation`) khi máy khôi phục xác thực lần đầu → token cũ 401 → máy cũ thôi giành FCM token / relay. | P2 |
+| A6 | Rà soát luồng phía server | Phần BE của mobile A8: với từng endpoint ghi số lần đọc/ghi Firestore, bell bắn cho ai, idempotency, và đối chiếu bất biến SRD. | P1 |
 
 ---
 
@@ -48,7 +62,7 @@
 - **22/10/2026**: `ANDROID_CERT_SHA256` đã đặt trên Render (SHA release + debug máy build); `assetlinks.json` production đúng, máy test báo App Links `verified` (cũ: mục 0.1). Đổi keystore/máy build → chạy lại `scripts/print_android_sha256.sh` của repo mobile và cập nhật biến.
 - **22/10/2026**: tự xoá FCM token chết (cũ: bước 1 mục 1); log đếm bell `NEW_MESSAGE` (một phần mục 3.1).
 - **22/10/2026** (nhánh `feat/otp-notification`): filter `fcm_token` trong `notifyNewMessage` dùng truthy check (token rỗng `''` không còn lọt qua).
-- **Nhánh `feat/otp-notification`** (chưa merge, xem 0.2): `NEW_MESSAGE` data-only cho Android kèm `sequence_number` + `sender_device_id`; `GET /api/v2/channels/message` (§6.4).
+- **Nhánh `feat/otp-notification`** (đã merge `main` — PR #1, đang chạy trên Render): `NEW_MESSAGE` data-only cho Android kèm `sequence_number` + `sender_device_id`; `GET /api/v2/channels/message` (§6.4).
 - **21/10/2026** (đã lên `main`):
   - Universal Opaque QR v3.3: con trỏ `qr_codes/{sha256(code)}`, `GET /api/v2/qr/resolve`, claim bằng `code`, `/qr/:code` fallback, `/.well-known/assetlinks.json` + AASA (từ env).
   - Xoay khoá idempotent: biên nhận `last_rotation` (hash package) → gửi lại y hệt trả `200 replayed: true`; 409 kèm `current_epoch` / `membership_version`; `ChannelMembershipService` là nơi duy nhất ghi epoch/envelope.
