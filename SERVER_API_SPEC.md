@@ -65,6 +65,7 @@
 | 409 | `REQUEST_NOT_PENDING` | Approve/reject khi request không còn PENDING | Refresh danh sách |
 | 409 | `MEMBERSHIP_CHANGED` | Package stale (epoch/version lệch) | Owner: sync → tạo lại package → retry 1 chạm |
 | 409 | `CHANNEL_NOT_ACTIVE` | Kênh ARCHIVED | Chặn gửi |
+| 409 | `DEVICE_EXISTS` | `POST /devices/register` với `device_id` đã có mà không kèm token hiện tại của thiết bị | Không thử lại: khôi phục từ bản sao lưu hoặc đăng ký `device_id` mới |
 | 409 | `EPOCH_OUTDATED` | Gửi message với `request_epoch != current_epoch` | Fetch self-envelope mới → unwrap → retry |
 | 409 | `REPLAY_DETECTED` | Trùng hash `(channel_id\|nonce\|ciphertext)` trong 24h | Không retry, báo lỗi |
 | 410 | `QR_EXPIRED` | Claim session hết hạn | Xin mã mới |
@@ -87,10 +88,16 @@ payload sai cấu trúc — hai mã không bao giờ chồng nhau.)*
 { "success": true, "device_token": "<raw, chỉ hiện 1 lần>", "device_id": "..." }
 ```
 
-- Idempotent theo `device_id`: gọi lại với cùng device_id → trả token mới,
-  update `public_key`/`device_name` (reinstall policy SRD 8.2).
-- Lưu `public_key` **một lần theo device_id mới** — luôn hợp lệ vì reinstall
-  sinh device_id mới (SRD 3.1).
+- `device_id` **mới** → tạo thiết bị, trả token.
+- `device_id` **đã tồn tại** → chỉ chấp nhận khi kèm `Authorization: Bearer
+  <token hiện tại của chính thiết bị đó>`: cấp token mới (token cũ hết hiệu
+  lực), cập nhật `device_name`/`platform`/`fcm_token`, **không bao giờ đổi
+  `public_key`**. Thiếu hoặc sai token → `409 DEVICE_EXISTS`.
+  Lý do: `device_id` không bí mật (member nào cũng thấy qua
+  `GET /channels/members`, `sender_device_id`) — đăng ký lại không cần bằng
+  chứng sẽ cho phép chiếm thiết bị và thay public key (FLOW_AUDIT S1).
+- Cài lại không có bản sao lưu = `device_id` mới + danh tính mới (SRD 8.2);
+  có bản sao lưu → khôi phục `device_id` + token cũ, không gọi endpoint này.
 
 ### 3.2. `PUT /api/v2/devices/fcm-token` 🔒
 

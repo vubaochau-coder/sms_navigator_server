@@ -199,30 +199,66 @@ describe('API v2 — Channel 1-to-N E2EE (spec v1.5)', () => {
       }
     });
 
-    it('is idempotent per device_id: re-register issues a fresh token and updates fields', async () => {
+    it('refuses to re-register an existing device_id without its token (device takeover, FLOW_AUDIT S1)', async () => {
       const deviceId = randomUUID();
+      const originalKey = fakePubkey();
       const first = await request(server)
         .post('/api/v2/devices/register')
-        .send({ device_id: deviceId, device_name: 'Old Name', platform: 'android', public_key: fakePubkey() });
+        .send({ device_id: deviceId, device_name: 'Victim', platform: 'android', public_key: originalKey });
+      expect(first.status).toBe(201);
+
+      const attacker = await request(server)
+        .post('/api/v2/devices/register')
+        .send({ device_id: deviceId, device_name: 'Attacker', platform: 'android', public_key: fakePubkey() });
+      expect(attacker.status).toBe(409);
+      expect(attacker.body.error).toBe('DEVICE_EXISTS');
+      expect(attacker.body.device_token).toBeUndefined();
+
+      // The victim keeps working and keeps its public key
+      const me = await request(server).get('/api/v2/devices/me').set(bearer(first.body.device_token));
+      expect(me.status).toBe(200);
+      expect(me.body.public_key).toBe(originalKey);
+    });
+
+    it('a wrong token is refused as well', async () => {
+      const deviceId = randomUUID();
+      await request(server)
+        .post('/api/v2/devices/register')
+        .send({ device_id: deviceId, device_name: 'A', platform: 'android', public_key: fakePubkey() });
+      const other = await reg('Other');
+
+      const res = await request(server)
+        .post('/api/v2/devices/register')
+        .set(bearer(other.token))
+        .send({ device_id: deviceId, device_name: 'A', platform: 'android', public_key: fakePubkey() });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('DEVICE_EXISTS');
+    });
+
+    it('with its current token, re-register rotates the token but never the public key', async () => {
+      const deviceId = randomUUID();
+      const originalKey = fakePubkey();
+      const first = await request(server)
+        .post('/api/v2/devices/register')
+        .send({ device_id: deviceId, device_name: 'Old Name', platform: 'android', public_key: originalKey });
       expect(first.status).toBe(201);
 
       const second = await request(server)
         .post('/api/v2/devices/register')
-        .send({
-          device_id: deviceId,
-          device_name: 'New Name',
-          platform: 'android',
-          public_key: fakePubkey()
-        });
+        .set(bearer(first.body.device_token))
+        .send({ device_id: deviceId, device_name: 'New Name', platform: 'android', public_key: fakePubkey() });
       expect(second.status).toBe(201);
       expect(second.body.device_token).not.toBe(first.body.device_token);
       expect(second.body.device_id).toBe(deviceId);
 
-      // Old token must stop working (token hash was overwritten)
+      // Old token stops working, new one works
       const oldAuth = await request(server).get('/api/v2/channels').set(bearer(first.body.device_token));
       expect(oldAuth.status).toBe(401);
       const newAuth = await request(server).get('/api/v2/channels').set(bearer(second.body.device_token));
       expect(newAuth.status).toBe(200);
+
+      const stored = await deviceService.findByDeviceId(deviceId);
+      expect(stored?.public_key).toBe(originalKey);
     });
   });
 

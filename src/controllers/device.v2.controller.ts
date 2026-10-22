@@ -6,9 +6,10 @@ export class DeviceV2Controller {
   /**
    * POST /api/v2/devices/register (API spec §3.1) — requires device_id,
    * device_name, platform, public_key (32-byte X25519 base64); fcm_token
-   * optional. Idempotent per device_id: re-calling with the same device_id
-   * issues a fresh token and updates public_key/device_name (reinstall
-   * policy SRD 8.2 — reinstall always generates a new device_id).
+   * optional. An existing device_id is only accepted together with its
+   * current Bearer token (token rotation; public_key never changes) —
+   * otherwise 409 DEVICE_EXISTS. Reinstall without a backup = new device_id
+   * (SRD 8.2).
    */
   public static async registerDevice(req: Request, res: Response): Promise<void> {
     const { device_id, device_name, platform, public_key, fcm_token } = req.body as {
@@ -19,13 +20,15 @@ export class DeviceV2Controller {
       fcm_token?: string;
     };
 
-    const { device, token } = await deviceService.registerDevice({
-      device_id,
-      device_name,
-      platform,
-      public_key,
-      fcm_token
-    });
+    // Optional Bearer: only used as proof of possession when rotating the
+    // token of an existing device_id (FLOW_AUDIT S1).
+    const authHeader = req.headers.authorization;
+    const presentedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : undefined;
+
+    const { device, token } = await deviceService.registerDevice(
+      { device_id, device_name, platform, public_key, fcm_token },
+      { presentedToken }
+    );
 
     res.status(201).json({
       success: true,
