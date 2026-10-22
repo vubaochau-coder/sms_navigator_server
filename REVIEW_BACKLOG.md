@@ -77,3 +77,13 @@
 **Kiểm thử**
 - [ ] Jest `channel-requests-history.test.ts`.
 
+## P3-1 · Log đếm bell cho mọi loại (BACKLOG 3.1)
+
+**Rà soát**
+- [ ] `FcmService.bellDevices(label, channelId, deviceIds, data, notification)`: đọc device, bỏ qua máy không token, gửi, log **1 dòng** `[FCM] <LABEL> bells for channel <id>: targets= sent= failed= no_token=`; không bao giờ throw.
+- [ ] Dùng cho JOIN_REQUEST, APPROVED, REVOKED, MEMBER_LEFT, ARCHIVED; NEW_MESSAGE dùng chung `logBellCounts` (giữ tách Android/iOS). Payload/notification **không đổi** (test spy vẫn khớp).
+
+**Kiểm thử**
+- [ ] Jest `fcm.test.ts` — "counts sent / failed / no_token".
+- [ ] Render logs: duyệt 1 thành viên → thấy dòng `APPROVED bells … sent=1`.
+

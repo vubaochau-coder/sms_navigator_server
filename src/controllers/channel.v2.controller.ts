@@ -161,30 +161,24 @@ export class ChannelV2Controller {
 
     // FCM bell to every revoked device (best-effort, N8). Skipped on an
     // idempotent retry — the bell already went out with the original commit.
-    await Promise.all(
-      (result.replayed ? [] : result.revoked).map(async (revokedId) => {
-        const target = await deviceService.findByDeviceId(revokedId);
-        if (!target?.fcm_token) return;
-        try {
-          await fcmService.sendDataNotification(
-            target.fcm_token,
-            {
-              type: 'CHANNEL_EVENT',
-              channel_id,
-              channel_name: result.channel_name,
-              kind: 'REVOKED',
-              epoch: String(result.current_epoch)
-            },
-            {
-              title: 'Quyền truy cập đã bị thu hồi',
-              body: `Bạn không còn quyền truy cập kênh "${result.channel_name}".`
-            }
-          );
-        } catch {
-          // ignore
+    if (!result.replayed) {
+      await fcmService.bellDevices(
+        'REVOKED',
+        channel_id,
+        result.revoked,
+        {
+          type: 'CHANNEL_EVENT',
+          channel_id,
+          channel_name: result.channel_name,
+          kind: 'REVOKED',
+          epoch: String(result.current_epoch)
+        },
+        {
+          title: 'Quyền truy cập đã bị thu hồi',
+          body: `Bạn không còn quyền truy cập kênh "${result.channel_name}".`
         }
-      })
-    );
+      );
+    }
 
     res.status(200).json({
       success: true,
@@ -201,28 +195,23 @@ export class ChannelV2Controller {
 
     const result = await channelService.leaveChannel(channel_id, device.device_id);
 
-    try {
-      const owner = await deviceService.findByDeviceId(result.owner_device_id);
-      if (owner?.fcm_token) {
-        const memberName = device.device_name ?? '';
-        await fcmService.sendDataNotification(
-          owner.fcm_token,
-          {
-            type: 'CHANNEL_EVENT',
-            channel_id,
-            channel_name: result.channel_name,
-            kind: 'MEMBER_LEFT',
-            device_name: memberName
-          },
-          {
-            title: 'Thành viên rời kênh',
-            body: `${memberName || 'Một thành viên'} đã rời kênh "${result.channel_name}".`
-          }
-        );
+    const memberName = device.device_name ?? '';
+    await fcmService.bellDevices(
+      'MEMBER_LEFT',
+      channel_id,
+      [result.owner_device_id],
+      {
+        type: 'CHANNEL_EVENT',
+        channel_id,
+        channel_name: result.channel_name,
+        kind: 'MEMBER_LEFT',
+        device_name: memberName
+      },
+      {
+        title: 'Thành viên rời kênh',
+        body: `${memberName || 'Một thành viên'} đã rời kênh "${result.channel_name}".`
       }
-    } catch {
-      // best-effort bell (N8)
-    }
+    );
 
     res.status(200).json({ success: true, membership_version: result.membership_version });
   }
@@ -253,29 +242,21 @@ export class ChannelV2Controller {
 
     const result = await channelService.archiveChannel(device.device_id, channel_id);
 
-    await Promise.all(
-      result.member_device_ids.map(async (memberId) => {
-        const target = await deviceService.findByDeviceId(memberId);
-        if (!target?.fcm_token) return;
-        try {
-          await fcmService.sendDataNotification(
-            target.fcm_token,
-            {
-              type: 'CHANNEL_EVENT',
-              channel_id,
-              channel_name: result.channel_name,
-              kind: 'REVOKED',
-              reason: 'ARCHIVED'
-            },
-            {
-              title: 'Kênh đã giải tán',
-              body: `Kênh "${result.channel_name}" đã được chủ kênh giải tán.`
-            }
-          );
-        } catch {
-          // ignore
-        }
-      })
+    await fcmService.bellDevices(
+      'ARCHIVED',
+      channel_id,
+      result.member_device_ids,
+      {
+        type: 'CHANNEL_EVENT',
+        channel_id,
+        channel_name: result.channel_name,
+        kind: 'REVOKED',
+        reason: 'ARCHIVED'
+      },
+      {
+        title: 'Kênh đã giải tán',
+        body: `Kênh "${result.channel_name}" đã được chủ kênh giải tán.`
+      }
     );
 
     res.status(200).json({ success: true, status: 'ARCHIVED', replayed: result.replayed });

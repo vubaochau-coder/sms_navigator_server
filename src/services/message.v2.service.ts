@@ -5,7 +5,7 @@ import { nowIso, msToIso, dayRange } from '../utils/time.js';
 import { HttpError } from '../utils/http-error.js';
 import { replayGuardService } from './replay-guard.service.js';
 import { deviceService } from './device.service.js';
-import { fcmService } from './fcm.service.js';
+import { fcmService, logBellCounts } from './fcm.service.js';
 import { logger } from '../utils/logger.js';
 import { assertNotProduction } from '../utils/test-only.js';
 import { channelService } from './channel.service.js';
@@ -179,10 +179,12 @@ export class MessageV2Service {
         )
       );
       const sent = messageIds.filter(Boolean).length;
-      logger.info(
-        `[MessageV2] NEW_MESSAGE bells for channel ${channelId}: members=${members.length} ` +
-          `sent=${sent} failed=${messageIds.length - sent} no_token=${members.length - reachable.length}`
-      );
+      logBellCounts('NEW_MESSAGE', channelId, {
+        targets: members.length,
+        sent,
+        failed: messageIds.length - sent,
+        no_token: members.length - reachable.length
+      });
     } catch (error) {
       // Best-effort: FCM is a wake-up signal, never part of the consistency path (N8)
       logger.warn('[MessageV2] Failed to send NEW_MESSAGE bells:', { error: String(error) });

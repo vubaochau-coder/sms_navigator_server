@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { pairingV2Service } from '../services/pairing.v2.service.js';
 import { channelService } from '../services/channel.service.js';
-import { deviceService } from '../services/device.service.js';
 import { fcmService } from '../services/fcm.service.js';
 import { PackageInput } from '../types/v2.js';
 
@@ -17,23 +16,22 @@ export class PairingV2Controller {
     try {
       const channel = await channelService.findChannelById(claimed.channel_id);
       if (channel) {
-        const owner = await deviceService.findByDeviceId(channel.owner_device_id);
-        if (owner?.fcm_token) {
-          await fcmService.sendDataNotification(
-            owner.fcm_token,
-            {
-              type: 'CHANNEL_EVENT',
-              channel_id: claimed.channel_id,
-              channel_name: channel.name,
-              kind: 'JOIN_REQUEST',
-              requester_device_name: device_name
-            },
-            {
-              title: 'Yêu cầu tham gia kênh',
-              body: `${device_name} muốn tham gia kênh "${channel.name}".`
-            }
-          );
-        }
+        await fcmService.bellDevices(
+          'JOIN_REQUEST',
+          claimed.channel_id,
+          [channel.owner_device_id],
+          {
+            type: 'CHANNEL_EVENT',
+            channel_id: claimed.channel_id,
+            channel_name: channel.name,
+            kind: 'JOIN_REQUEST',
+            requester_device_name: device_name
+          },
+          {
+            title: 'Yêu cầu tham gia kênh',
+            body: `${device_name} muốn tham gia kênh "${channel.name}".`
+          }
+        );
       }
     } catch {
       // ignore FCM failures
@@ -69,28 +67,23 @@ export class PairingV2Controller {
 
     // Bell: APPROVED to the requester (best-effort, N8). Skipped on an
     // idempotent retry — the bell already went out with the original commit.
-    try {
-      const requester = result.replayed
-        ? null
-        : await deviceService.findByDeviceId(result.requester_device_id);
-      if (requester?.fcm_token) {
-        await fcmService.sendDataNotification(
-          requester.fcm_token,
-          {
-            type: 'CHANNEL_EVENT',
-            channel_id: result.channel_id,
-            channel_name: result.channel_name,
-            kind: 'APPROVED',
-            epoch: String(result.current_epoch)
-          },
-          {
-            title: 'Yêu cầu đã được duyệt',
-            body: `Bạn đã được thêm vào kênh "${result.channel_name}". Mở app để xem tin nhắn SMS.`
-          }
-        );
-      }
-    } catch {
-      // ignore FCM failures
+    if (!result.replayed) {
+      await fcmService.bellDevices(
+        'APPROVED',
+        result.channel_id,
+        [result.requester_device_id],
+        {
+          type: 'CHANNEL_EVENT',
+          channel_id: result.channel_id,
+          channel_name: result.channel_name,
+          kind: 'APPROVED',
+          epoch: String(result.current_epoch)
+        },
+        {
+          title: 'Yêu cầu đã được duyệt',
+          body: `Bạn đã được thêm vào kênh "${result.channel_name}". Mở app để xem tin nhắn SMS.`
+        }
+      );
     }
 
     res.status(200).json({

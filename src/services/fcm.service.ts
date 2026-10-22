@@ -28,6 +28,21 @@ const mockTransport: FcmTransport = async (message) => {
 
 const firebaseTransport: FcmTransport = (message) => getMessaging().send(message);
 
+export interface BellCounts {
+  targets: number;
+  sent: number;
+  failed: number;
+  no_token: number;
+}
+
+/** One structured line per bell fan-out (BACKLOG 3.1) — debug "không thấy FCM" from Render logs. */
+export function logBellCounts(label: string, channelId: string, counts: BellCounts): void {
+  logger.info(
+    `[FCM] ${label} bells for channel ${channelId}: targets=${counts.targets} ` +
+      `sent=${counts.sent} failed=${counts.failed} no_token=${counts.no_token}`
+  );
+}
+
 export class FcmService {
   private readonly transport: FcmTransport;
 
@@ -68,6 +83,34 @@ export class FcmService {
       }
       return '';
     }
+  }
+
+  /**
+   * Best-effort bell to a set of devices (N8): devices without a token are
+   * counted, never sent to; one counts line is logged per call. Never throws.
+   */
+  public async bellDevices(
+    label: string,
+    channelId: string,
+    deviceIds: string[],
+    data: Record<string, string>,
+    notification?: { title: string; body: string }
+  ): Promise<BellCounts> {
+    const counts: BellCounts = { targets: deviceIds.length, sent: 0, failed: 0, no_token: 0 };
+    try {
+      const devices = await Promise.all(deviceIds.map((id) => deviceService.findByDeviceId(id)));
+      const reachable = devices.filter((device): device is NonNullable<typeof device> => Boolean(device?.fcm_token));
+      counts.no_token = deviceIds.length - reachable.length;
+      const ids = await Promise.all(
+        reachable.map((device) => this.sendDataNotification(device.fcm_token!, data, notification))
+      );
+      counts.sent = ids.filter(Boolean).length;
+      counts.failed = ids.length - counts.sent;
+    } catch (error) {
+      logger.warn(`[FCM] ${label} bells for channel ${channelId} failed:`, { error: String(error) });
+    }
+    logBellCounts(label, channelId, counts);
+    return counts;
   }
 
   private async dropDeadToken(fcmToken: string): Promise<void> {
