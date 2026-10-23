@@ -24,6 +24,7 @@ async function bootstrap() {
   const server = app.listen(env.PORT, () => {
     logger.info(`🚀 SMS Navigator OTP Relay Server running on http://localhost:${env.PORT}`);
     logger.info(`⚡ Environment: ${env.NODE_ENV} | Mock Firebase: ${env.FIREBASE_MOCK_MODE}`);
+    logger.info(`🔗 QR links: ${env.SERVER_BASE_URL}/qr/<code>`);
   });
 
   const shutdown = () => {
