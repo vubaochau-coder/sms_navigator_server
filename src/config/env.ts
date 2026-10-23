@@ -18,8 +18,12 @@ const envSchema = z.object({
   // Mặc định RỖNG = chặn mọi cross-origin request (client chính là app mobile,
   // không dùng CORS). Dùng '*' chỉ khi thật sự cần mở cho mọi origin.
   CORS_ORIGIN: z.string().default(''),
-  // Public base URL embedded in v2 QR invite payloads (srv= parameter)
-  SERVER_BASE_URL: z.string().default('http://localhost:3000'),
+  // Public base URL of the QR / invite links (https://<host>/qr/<code>). Must be
+  // the HTTPS host the app accepts and verifies for App Links. The default is
+  // the production proxy: an unset variable used to fall back to
+  // http://localhost:3000, which shipped unusable QR codes (the app rejects
+  // any other host, and no phone can open localhost).
+  SERVER_BASE_URL: z.string().url().default('https://sms-relay.hirusakunasaga.workers.dev'),
   // App Links (Android): package + SHA-256 cert fingerprints, comma-separated
   // (debug, release, Play App Signing). Empty list → assetlinks.json is [].
   ANDROID_APP_PACKAGE: z.string().default('com.example.sms_navigator'),
