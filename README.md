@@ -2,6 +2,8 @@
 
 Backend trung gian chuyển tiếp OTP và quản lý kênh mã hóa đầu-cuối (Channel 1-to-N E2EE Relay Server), sử dụng **Node.js, TypeScript, Express, và Firebase Admin SDK / Cloud Firestore**.
 
+Server hoạt động theo mô hình **zero-knowledge**: chỉ lưu và chuyển tiếp ciphertext, không bao giờ giữ khóa hay đọc được nội dung SMS. Ứng dụng di động đi kèm: [sms_navigator](https://github.com/vubaochau-coder/sms_navigator).
+
 ---
 
 ## 1. Tính Năng & Kiến Trúc V2
