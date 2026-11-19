@@ -1,7 +1,7 @@
 {
   "name": "sms_navigator_server",
   "version": "1.0.0",
-  "description": "Zero-Knowledge OTP Relay Backend Server with Firebase Admin SDK",
+  "description": "Zero-knowledge E2EE relay server chuyển tiếp SMS/OTP cho ứng dụng SMS Navigator (Node.js, Express, Firebase)",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
