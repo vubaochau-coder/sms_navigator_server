@@ -1,8 +1,17 @@
 name: Keep Server Alive
 
+# Best-effort only: GitHub delays or skips scheduled runs (in practice
+# '*/10' fires every few hours), so this cannot keep a Render free-tier
+# service (15 min idle limit) awake on its own. Use an external uptime
+# monitor (UptimeRobot, cron-job.org, ...) pinging /health every 5 min as the
+# primary keep-alive; this job is a fallback and an alarm.
+#
+# The ping goes straight to Render, not through the Cloudflare Worker: while
+# the service sleeps, Render answers Worker traffic with a bot challenge
+# (HTTP 429) instead of waking it.
+
 on:
   schedule:
-    # Run every 10 minutes to prevent Render free tier from sleeping (15m idle limit)
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
@@ -10,9 +19,21 @@ jobs:
   ping:
     name: Ping Render Server
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Send keep-alive HTTP GET request
         run: |
-          echo "Pinging SMS Navigator Server on Render..."
-          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" https://sms-navigator-server.onrender.com/api/v1/health)
-          echo "$RESPONSE"
+          URL="https://sms-navigator-server.onrender.com/health"
+          # A cold start takes ~30-60 s and Render sometimes answers a burst
+          # with 429, so retry a few times before declaring the ping failed.
+          for attempt in 1 2 3 4; do
+            CODE=$(curl -sS -o body.txt -w "%{http_code}" --max-time 90 "$URL" || echo "000")
+            echo "Attempt $attempt: HTTP $CODE"
+            head -c 300 body.txt 2>/dev/null; echo
+            if [ "$CODE" = "200" ] && grep -q '"healthy"' body.txt; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::Keep-alive ping failed: last HTTP $CODE from $URL"
+          exit 1
