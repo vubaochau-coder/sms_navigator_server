@@ -3,10 +3,23 @@ name: CI
 # main tự deploy lên Render — mọi PR phải qua typecheck, lint và Jest.
 # Jest chạy offline (Firestore mock, FCM mock): không cần secret.
 
+# Bỏ qua thay đổi chỉ chạm tài liệu / workflow không liên quan tới build.
+# Lưu ý: nếu bật branch protection yêu cầu check CI, PR bị bỏ qua sẽ
+# kẹt ở trạng thái chờ check.
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/workflows/keep-alive.yml'
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/workflows/keep-alive.yml'
 
 concurrency:
   group: ci-${{ github.ref }}
